@@ -1,0 +1,12 @@
+{
+  "needs": {"cpu": 1, "ram_mb": 8192, "gpu": 1},
+  "max_runtime_sec": 1800,
+  "workload": {
+    "interpreter": "python",
+    "pip": ["torch"],
+    "pip_index_url": "https://download.pytorch.org/whl/nightly/rocm6.4",
+    "pip_timeout_sec": 1800,
+    "script": "import torch\nprint('torch', torch.__version__)\nprint('hip/rocm build:', getattr(torch.version, 'hip', None))\nprint('gpu available:', torch.cuda.is_available())\nif torch.cuda.is_available():\n    print('device:', torch.cuda.get_device_name(0))\n    x = torch.randn(4096, 4096, device='cuda')\n    y = x @ x\n    torch.cuda.synchronize()\n    print('matmul on GPU ok, sum:', float(y.sum()))\nelse:\n    print('no ROCm GPU visible to this job')\n",
+    "input": ""
+  }
+}

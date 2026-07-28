@@ -1,0 +1,4 @@
+# Normalize line endings to LF in the repo and on checkout.
+# Critical: the `aicn` launcher and Python run on the Linux nodes, so CRLF
+# (from a Windows checkout) would break the shebang / scripts.
+* text=auto eol=lf

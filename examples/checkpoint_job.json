@@ -1,0 +1,9 @@
+{
+  "needs": {"cpu": 1, "ram_mb": 128},
+  "max_runtime_sec": 300,
+  "workload": {
+    "interpreter": "python",
+    "script": "import os, json, time\nck = os.environ['AICN_CHECKPOINT_DIR']\nstate = os.path.join(ck, 'state.json')\nstart = 0\nif os.path.exists(state):\n    start = json.load(open(state))['next']\n    print('resuming from step', start, flush=True)\nfor i in range(start, 20):\n    print('step', i, flush=True)\n    json.dump({'next': i + 1}, open(state, 'w'))   # checkpoint after each step\n    time.sleep(0.5)\nout = os.environ['AICN_OUTPUT_DIR']\nopen(os.path.join(out, 'done.txt'), 'w').write('completed all 20 steps')\nprint('done', flush=True)\n",
+    "input": ""
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "needs": {"cpu": 1, "ram_mb": 128},
+  "max_runtime_sec": 60,
+  "workload": {
+    "interpreter": "python",
+    "script": "import os, json\ni = os.environ.get('AICN_TASK_INDEX', '?')\ntask = os.environ.get('AICN_TASK')\nparams = json.loads(task) if task else {}\nprint(f'task {i} running with params={params}', flush=True)\nout = os.environ['AICN_OUTPUT_DIR']\nopen(os.path.join(out, f'task_{i}.txt'), 'w').write(f'result of task {i}: {params}\\n')\nprint('task', i, 'done', flush=True)\n",
+    "input": ""
+  }
+}

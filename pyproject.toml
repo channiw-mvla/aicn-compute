@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicn-compute"
+version = "0.5.0"
+description = "AI Compute Network — node agent and CLI for sharing/using idle compute"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "websockets>=12.0",
+    "psutil>=5.9.0",
+    "cryptography>=41.0.0",
+]
+
+[project.scripts]
+aicn = "aicn:main"           # the requester/control CLI
+aicn-agent = "agent:cli"     # run a node agent (contribute compute)
+
+[tool.setuptools]
+# Only the modules the agent + CLI need — the gateway is run from source.
+py-modules = [
+    "aicn", "agent", "client", "protocol", "identity",
+    "tlsutil", "hardware", "policy", "sandbox", "scheduler",
+]

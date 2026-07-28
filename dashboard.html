@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AICN — Compute Pool</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2029; --panel2: #232b36; --line: #2e3a48;
+    --text: #e6edf3; --muted: #8b98a5; --accent: #4aa8ff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --busy: #a371f7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  #conn { margin-left: auto; font-size: 12px; padding: 4px 10px; border-radius: 20px;
+    background: #30363d; color: var(--muted); }
+  #conn.up { background: rgba(63,185,80,.15); color: var(--ok); }
+  #conn.down { background: rgba(248,81,73,.15); color: var(--bad); }
+  .wrap { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--muted); margin: 0 0 12px; }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .node { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .node:hover { border-color: #3d4a5a; }
+  .node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .node .pin { margin-left: auto; font-size: 11px; color: var(--accent); display: none; }
+  .node.selected .pin { display: inline; }
+  #targetBar { font-size: 12px; color: var(--muted); margin: 4px 0 2px; }
+  #targetBar b { color: var(--accent); }
+  #targetBar .hint { color: #5a6673; }
+  .linkbtn { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0 0 0 6px;
+    width: auto; font-size: 12px; text-decoration: underline; }
+  .node .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.available { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.busy { background: var(--busy); box-shadow: 0 0 8px var(--busy); }
+  .dot.off { background: var(--muted); }
+  .node .badge { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 12px; }
+  .badge.available { background: rgba(63,185,80,.15); color: var(--ok); }
+  .badge.busy { background: rgba(163,113,247,.15); color: var(--busy); }
+  .badge.off { background: #30363d; color: var(--muted); }
+  .node .specs { color: var(--muted); font-size: 12px; margin-top: 10px; display: grid; gap: 5px; }
+  .node .specs b { color: var(--text); font-weight: 600; }
+  .node .spec { display: grid; grid-template-columns: 42px 1fr; gap: 8px; align-items: start; }
+  .node .spec .k { color: #5a6673; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; padding-top: 1px; }
+  .node .gpu-row { color: var(--text); }
+  .node .gpu-row .vendor { color: var(--busy); font-size: 11px; text-transform: uppercase; }
+  .node .gpu-row.none { color: var(--muted); }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  select, input, textarea, button { font: inherit; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; width: 100%; }
+  textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  button.primary { background: var(--accent); color: #06121f; border: none; font-weight: 600;
+    cursor: pointer; margin-top: 12px; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .results { display: flex; flex-direction: column; gap: 10px; max-height: 340px; overflow-y: auto; }
+  .result { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--panel2); }
+  .result .head { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+  .result .st { padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 11px; }
+  .st.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .st.error, .st.timeout, .st.oom { background: rgba(248,81,73,.15); color: var(--bad); }
+  .st.pending, .st.cancelled { background: rgba(210,153,34,.15); color: var(--warn); }
+  pre { margin: 8px 0 0; background: #0d1117; border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  pre.log { max-height: 260px; overflow-y: auto; }
+  .rsum { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .arts { margin-top: 8px; font-size: 12px; }
+  .arts .k { color: #5a6673; text-transform: uppercase; font-size: 10px; margin-right: 6px; }
+  a.artlink { color: var(--accent); margin-right: 12px; text-decoration: underline; cursor: pointer; }
+  .st.running { background: rgba(74,168,255,.15); color: var(--accent); }
+  .jobs-card { margin: 0 20px 20px; }
+  .jobs-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .jobs-tbl th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 10px;
+    border-bottom: 1px solid var(--line); text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+  .jobs-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, Consolas, monospace; }
+  .jobs-tbl .act { background: none; border: 1px solid var(--line); color: var(--text);
+    border-radius: 5px; padding: 2px 8px; cursor: pointer; font-size: 11px; margin-right: 4px; width: auto; }
+  .jobs-tbl .act:hover { border-color: var(--accent); color: var(--accent); }
+  .events { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted);
+    max-height: 200px; overflow-y: auto; }
+  .events div { padding: 1px 0; }
+  .events .ts { color: #5a6673; margin-right: 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>AICN · Compute Pool</h1>
+  <span class="sub">Phase 1 · LAN</span>
+  <span id="conn">connecting…</span>
+</header>
+
+<div class="wrap">
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <div class="card">
+      <h2>Devices <span id="nodeCount" style="color:var(--muted)"></span></h2>
+      <div id="nodes" class="nodes"><div class="empty">No devices connected yet.</div></div>
+    </div>
+    <div class="card">
+      <h2>Activity</h2>
+      <div id="events" class="events"></div>
+    </div>
+  </div>
+
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <div class="card">
+      <h2>Submit a job</h2>
+      <div class="row">
+        <div>
+          <label>Interpreter</label>
+          <select id="interpreter">
+            <option value="python">python</option>
+            <option value="bash">bash</option>
+            <option value="sh">sh</option>
+            <option value="node">node</option>
+          </select>
+        </div>
+        <div>
+          <label>RAM (MB)</label>
+          <input id="ram" type="number" value="128" min="1">
+        </div>
+        <div>
+          <label>Max runtime (s)</label>
+          <input id="runtime" type="number" value="30" min="1">
+        </div>
+      </div>
+      <label>Packages (pip, comma-separated — optional)</label>
+      <input id="pip" type="text" placeholder="e.g. numpy, pandas">
+      <label>Script</label>
+      <textarea id="script">import platform
+print("hello from", platform.node())
+print("2 + 2 =", 2 + 2)</textarea>
+      <label>Standard input (optional)</label>
+      <input id="stdin" type="text" placeholder="passed to the script's stdin">
+      <div id="targetBar">Target: <b>Auto</b> <span class="hint">— click a device above to pin the job to it</span></div>
+      <button id="submit" class="primary" disabled>Run on the pool</button>
+    </div>
+
+    <div class="card">
+      <h2>Results</h2>
+      <div id="results" class="results"><div class="empty">Submitted jobs appear here.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card jobs-card">
+  <h2>Jobs <span id="jobStats" style="color:var(--muted)"></span>
+    <button id="refreshJobs" class="linkbtn" style="float:right">refresh</button></h2>
+  <div style="overflow-x:auto">
+    <table class="jobs-tbl"><thead><tr>
+      <th>Job</th><th>Status</th><th>Node</th><th>Batch</th><th>Age</th><th></th>
+    </tr></thead><tbody id="jobsBody"><tr><td colspan="6" class="empty">No jobs yet.</td></tr></tbody></table>
+  </div>
+</div>
+
+<script>
+const WS_URL = `{{WS_SCHEME}}://${location.hostname}:{{WS_PORT}}`;
+const TOKEN = "{{TOKEN}}";  // injected by the gateway when a shared secret is set
+const $ = id => document.getElementById(id);
+let ws, connected = false;
+const jobs = {}; // job_id -> result card element
+let selectedNode = null;  // pinned target node id, or null = auto-match
+let lastNodes = [];       // most recent node list (for re-render on selection)
+
+function setConn(state, text) {
+  const el = $("conn");
+  el.className = state;
+  el.textContent = text;
+}
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    connected = true;
+    setConn("up", "connected");
+    $("submit").disabled = false;
+    const reg = { type: "REGISTER", role: "dashboard" };
+    if (TOKEN) reg.token = TOKEN;
+    ws.send(JSON.stringify(reg));
+    refreshJobs();
+    if (!jobTimer) jobTimer = setInterval(() => { if (connected) refreshJobs(); }, 3000);
+  };
+  ws.onclose = () => {
+    connected = false;
+    setConn("down", "disconnected — retrying");
+    $("submit").disabled = true;
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = ev => handle(JSON.parse(ev.data));
+}
+
+function handle(msg) {
+  switch (msg.type) {
+    case "UNAUTHORIZED": setConn("down", "unauthorized — bad token"); $("submit").disabled = true; break;
+    case "STATE": renderNodes(msg.nodes); renderEvents(msg.events); renderStats(msg); break;
+    case "JOB_ACCEPTED": markAccepted(msg); break;
+    case "JOB_LOG": appendLog(msg); break;
+    case "JOB_RESULT": markResult(msg); break;
+    case "JOB_FAILED": markFailed(msg.job_id, msg.reason); break;
+    case "JOB_STATUS": onJobStatus(msg); break;
+    case "JOBS_LIST": renderJobs(msg.jobs); break;
+  }
+}
+
+function renderNodes(nodes) {
+  lastNodes = nodes;
+  // drop a pin whose device has disconnected
+  if (selectedNode && !nodes.some(n => n.id === selectedNode)) selectedNode = null;
+  updateTarget();
+
+  $("nodeCount").textContent = nodes.length ? `(${nodes.length})` : "";
+  const box = $("nodes");
+  if (!nodes.length) { box.innerHTML = '<div class="empty">No devices connected yet.</div>'; return; }
+  box.innerHTML = "";
+  for (const n of nodes) {
+    const state = !n.available ? "off" : (n.busy ? "busy" : "available");
+    const label = !n.available ? "unavailable" : (n.busy ? "running" : "available");
+    const hw = n.hardware || {};
+    const rel = Math.round((n.reliability ?? 1) * 100);
+
+    const cores = (hw.cores && hw.cores !== hw.cpu)
+      ? `${hw.cores} cores / ${hw.cpu} threads` : `${hw.cpu ?? "?"} threads`;
+
+    let gpuHtml;
+    if (hw.gpus && hw.gpus.length) {
+      gpuHtml = hw.gpus.map(g => `<div class="gpu-row">${esc(g.name || "GPU")}`
+        + (g.vendor ? ` <span class="vendor">${esc(g.vendor)}</span>` : "")
+        + (g.vram_mb ? ` · ${fmtMB(g.vram_mb)}` : "") + `</div>`).join("");
+    } else {
+      gpuHtml = `<div class="gpu-row none">none</div>`;
+    }
+
+    const host = [hw.hostname, hw.os, hw.arch].filter(Boolean).map(esc).join(" · ") || "?";
+
+    const el = document.createElement("div");
+    el.className = "node" + (n.id === selectedNode ? " selected" : "");
+    el.title = "Click to pin the next job to this device";
+    el.onclick = () => selectNode(n.id);
+    el.innerHTML = `
+      <div class="name"><span class="dot ${state}"></span>${esc(n.id)}
+        <span class="badge ${state}">${label}</span><span class="pin">📌 pinned</span></div>
+      <div class="specs">
+        <div class="spec"><span class="k">Host</span><span>${host}</span></div>
+        <div class="spec"><span class="k">CPU</span><span><b>${esc(hw.cpu_model || "?")}</b><br>${cores}</span></div>
+        <div class="spec"><span class="k">RAM</span><span><b>${fmtMB(hw.ram_mb)}</b></span></div>
+        <div class="spec"><span class="k">GPU</span><span>${gpuHtml}</span></div>
+        <div class="spec"><span class="k">Rel.</span><span><b>${rel}%</b> · ${n.ok}✓ / ${n.fail}✗</span></div>
+      </div>`;
+    box.appendChild(el);
+  }
+}
+
+function selectNode(id) {
+  selectedNode = (selectedNode === id) ? null : id;   // click again to unpin
+  renderNodes(lastNodes);
+}
+
+function updateTarget() {
+  const el = $("targetBar");
+  if (selectedNode) {
+    el.innerHTML = `Target: <b>${esc(selectedNode)}</b> <button class="linkbtn" id="clearTarget">use auto-match</button>`;
+    $("clearTarget").onclick = ev => { ev.stopPropagation(); selectedNode = null; renderNodes(lastNodes); };
+  } else {
+    el.innerHTML = `Target: <b>Auto</b> <span class="hint">— click a device above to pin the job to it</span>`;
+  }
+}
+
+function renderEvents(events) {
+  const box = $("events");
+  box.innerHTML = (events || []).slice().reverse()
+    .map(e => `<div><span class="ts">${e.ts}</span>${esc(e.text)}</div>`).join("");
+}
+
+function submitJob() {
+  if (!connected) return;
+  const job_id = "job-" + Math.random().toString(36).slice(2, 10);
+  const workload = { interpreter: $("interpreter").value, script: $("script").value, input: $("stdin").value || "" };
+  const pip = $("pip").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (pip.length) workload.pip = pip;
+  const spec = {
+    type: "SUBMIT_JOB", job_id,
+    needs: { cpu: 1, ram_mb: parseInt($("ram").value, 10) || 128 },
+    max_runtime_sec: parseInt($("runtime").value, 10) || 30,
+    workload,
+  };
+  if (selectedNode) spec.target_node = selectedNode;
+  ensureCard(job_id, selectedNode);
+  ws.send(JSON.stringify(spec));
+}
+
+function ensureCard(job_id, target) {
+  if (jobs[job_id]) return jobs[job_id];
+  const results = $("results");
+  const empty = results.querySelector(".empty"); if (empty) empty.remove();
+  const where = target ? `→ ${esc(target)} (pinned)` : "";
+  const el = document.createElement("div");
+  el.className = "result";
+  el.innerHTML = `<div class="head"><b>${esc(job_id)}</b>
+      <span class="st pending">pending</span><span class="where" style="color:var(--muted)">${where}</span></div>`;
+  results.prepend(el);
+  jobs[job_id] = el;
+  return el;
+}
+
+function markAccepted(msg) {
+  const el = ensureCard(msg.job_id);
+  const st = el.querySelector(".st");
+  const where = el.querySelector(".where");
+  if (msg.status === "queued") {
+    st.className = "st pending"; st.textContent = "queued";
+    where.textContent = "position " + (msg.queue_position ?? "?");
+  } else {
+    st.className = "st running"; st.textContent = "running";
+    where.textContent = "→ " + (msg.node_id || "");
+  }
+}
+
+function logPre(el) {
+  let pre = el.querySelector("pre.log");
+  if (!pre) { pre = document.createElement("pre"); pre.className = "log"; el.appendChild(pre); }
+  return pre;
+}
+
+function appendLog(msg) {
+  const pre = logPre(ensureCard(msg.job_id));
+  pre.textContent += msg.data || "";
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function markResult(msg) {
+  const el = ensureCard(msg.job_id);
+  const st = el.querySelector(".st");
+  st.className = "st " + msg.status; st.textContent = msg.status;
+  const pre = el.querySelector("pre.log");
+  if (!pre || !pre.textContent.length) {          // wasn't streamed -> show captured output
+    const p = logPre(el);
+    if (msg.stdout) p.textContent += msg.stdout;
+    if (msg.stderr) p.textContent += (p.textContent ? "\n" : "") + "[stderr]\n" + msg.stderr;
+  }
+  if (!el.querySelector(".rsum")) {
+    const s = document.createElement("div"); s.className = "rsum";
+    s.textContent = `exit ${msg.exit_code} · ${msg.runtime_sec}s`;
+    el.appendChild(s);
+  }
+  renderArtifacts(el, msg.artifacts);
+}
+
+function markFailed(job_id, reason) {
+  const el = ensureCard(job_id);
+  const st = el.querySelector(".st"); st.className = "st error"; st.textContent = "failed";
+  logPre(el).textContent += (reason || "no eligible device") + "\n";
+}
+
+function renderArtifacts(el, artifacts) {
+  artifacts = artifacts || {};
+  const names = Object.keys(artifacts);
+  if (!names.length || el.querySelector(".arts")) return;
+  const box = document.createElement("div"); box.className = "arts";
+  box.innerHTML = `<span class="k">artifacts</span>`;
+  for (const name of names) {
+    const a = document.createElement("a");
+    a.className = "artlink"; a.textContent = name; a.download = name.split("/").pop();
+    a.href = b64ToUrl(artifacts[name]);
+    box.appendChild(a);
+  }
+  el.appendChild(box);
+}
+
+function b64ToUrl(b64) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes]));
+}
+
+// -- jobs panel --
+let jobTimer = null;
+function refreshJobs() { if (connected) ws.send(JSON.stringify({ type: "LIST_JOBS" })); }
+function getJob(id) { ws.send(JSON.stringify({ type: "GET_JOB", job_id: id, follow: true })); }
+function cancelJob(id) { ws.send(JSON.stringify({ type: "CANCEL_JOB", job_id: id })); setTimeout(refreshJobs, 400); }
+function jobAge(ts) {
+  if (!ts) return "-";
+  const d = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  return d < 60 ? d + "s" : d < 3600 ? Math.floor(d / 60) + "m" : Math.floor(d / 3600) + "h";
+}
+function onJobStatus(msg) {
+  ensureCard(msg.job_id);
+  if (msg.result) markResult(Object.assign({ job_id: msg.job_id }, msg.result));
+  else {
+    const st = jobs[msg.job_id].querySelector(".st");
+    st.className = "st " + (msg.status === "done" ? "ok" : msg.status); st.textContent = msg.status;
+  }
+}
+function renderStats(msg) {
+  const el = $("jobStats"); if (!el) return;
+  el.textContent = `(${msg.jobs_active || 0} running · ${msg.jobs_queued || 0} queued)`;
+}
+function renderJobs(list) {
+  const body = $("jobsBody");
+  if (!list || !list.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No jobs yet.</td></tr>'; return; }
+  body.innerHTML = "";
+  for (const j of list) {
+    const active = j.status === "queued" || j.status === "running";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(j.job_id)}</td>
+      <td><span class="st ${j.status === 'done' ? 'ok' : j.status}">${j.status}</span></td>
+      <td>${esc(j.node_id || "-")}</td><td>${esc(j.batch_id || "-")}</td><td>${jobAge(j.created_at)}</td><td></td>`;
+    const acts = tr.lastElementChild;
+    const view = document.createElement("button"); view.className = "act"; view.textContent = "view";
+    view.onclick = () => getJob(j.job_id); acts.appendChild(view);
+    if (active) {
+      const c = document.createElement("button"); c.className = "act"; c.textContent = "cancel";
+      c.onclick = () => cancelJob(j.job_id); acts.appendChild(c);
+    }
+    body.appendChild(tr);
+  }
+}
+
+function fmtMB(mb) { return mb ? (mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : mb + " MB") : "?"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+$("submit").addEventListener("click", submitJob);
+$("refreshJobs").addEventListener("click", refreshJobs);
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Launcher so you can run `aicn ...` instead of `python3 aicn.py ...`.
+# Uses the venv next to this script if present, so it works without activating it.
+#   chmod +x ~/aicn/aicn
+#   sudo ln -s ~/aicn/aicn /usr/local/bin/aicn     # then: aicn nodes
+DIR="$(dirname "$(readlink -f "$0")")"
+PY="$DIR/venv/bin/python3"
+[ -x "$PY" ] || PY=python3
+exec "$PY" "$DIR/aicn.py" "$@"

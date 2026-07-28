@@ -1,0 +1,9 @@
+{
+  "needs": {"cpu": 1, "ram_mb": 128},
+  "max_runtime_sec": 30,
+  "workload": {
+    "interpreter": "python",
+    "script": "import platform, sys\nprint('hello from borrowed device:', platform.node())\nprint('python', sys.version.split()[0])\nprint('2 + 2 =', 2 + 2)\ntotal = sum(i*i for i in range(1000))\nprint('sum of squares 0..999 =', total)\n",
+    "input": ""
+  }
+}

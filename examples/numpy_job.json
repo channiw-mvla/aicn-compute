@@ -1,0 +1,10 @@
+{
+  "needs": {"cpu": 1, "ram_mb": 512},
+  "max_runtime_sec": 120,
+  "workload": {
+    "interpreter": "python",
+    "pip": ["numpy"],
+    "script": "import numpy as np\na = np.arange(12).reshape(3, 4)\nprint('numpy', np.__version__)\nprint(a)\nprint('row sums:', a.sum(axis=1))\nprint('mean:', a.mean())\n",
+    "input": ""
+  }
+}
