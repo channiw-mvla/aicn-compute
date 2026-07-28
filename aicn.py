@@ -29,7 +29,7 @@ import identity as ID
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".aicn", "config.json")
 DEFAULTS = {
-    "gateway": "ws://127.0.0.1:8765",
+    "gateway": "ws://100.65.180.16:8765",   # tailnet gateway; override: aicn config set gateway ...
     "token": None, "secure": False, "identity_key": None,
     "tls_ca": None, "insecure": False,
     "ram": "1g", "timeout": "5m",

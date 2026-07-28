@@ -340,7 +340,7 @@ def load_job(args):
 
 def main():
     ap = argparse.ArgumentParser(description="AICN requester client")
-    ap.add_argument("--gateway", default="ws://127.0.0.1:8765")
+    ap.add_argument("--gateway", default="ws://100.65.180.16:8765")
     ap.add_argument("--token", help="shared-secret token (or set AICN_TOKEN env var)")
     ap.add_argument("--secure", action="store_true", help="use Phase 3 keypair auth (matches a secure gateway)")
     ap.add_argument("--identity-key", help="path to your private identity key (default ~/.aicn/identity.key)")

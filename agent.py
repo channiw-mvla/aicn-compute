@@ -33,7 +33,7 @@ from scheduler import Scheduler
 
 DEFAULT_CONFIG = {
     "node_id": None,
-    "gateway_url": "ws://127.0.0.1:8765",
+    "gateway_url": "ws://100.65.180.16:8765",
     "token": None,
     "secure": False,
     "identity_key": None,
