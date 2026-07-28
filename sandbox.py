@@ -159,7 +159,8 @@ class SubprocessSandbox(_BaseSandbox):
         tmp = target + ".tmp-" + uuid.uuid4().hex[:8]
         extra = shlex.split(os.environ.get("AICN_PIP_ARGS", "")) + list(job_extra)
         cmd = [sys.executable, "-m", "pip", "install", "--target", tmp,
-               "--no-input", "--disable-pip-version-check"] + extra + list(reqs)
+               "--no-input", "--disable-pip-version-check",
+               "--prefer-binary"] + extra + list(reqs)
 
         started = time.monotonic()
         with self._lock:

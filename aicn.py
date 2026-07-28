@@ -212,6 +212,43 @@ def cmd_nodes(args, cfg):
     return 0
 
 
+def cmd_install(args, cfg):
+    """Prewarm packages into nodes' pip cache so later jobs start instantly."""
+    packages = [p.strip() for p in args.packages.split(",") if p.strip()]
+    if not packages:
+        print("nothing to install", file=sys.stderr)
+        return 64
+    gw, cr = cfg["gateway"], creds(cfg)
+    if args.node:
+        targets = [args.node]
+    else:
+        nodes = call(C.list_nodes(gw, **cr), gw)
+        if nodes is None:
+            return 3
+        targets = [n["id"] for n in nodes]
+        if not targets:
+            print("no nodes connected")
+            return 2
+    timeout = parse_time(args.pip_timeout) if args.pip_timeout else 3600
+    verify = f"print('prewarmed:', {packages!r})\n"
+    rc = 0
+    for node in targets:
+        workload = {"interpreter": "python", "script": verify,
+                    "pip": packages, "pip_timeout_sec": timeout}
+        if args.pip_index:
+            workload["pip_index_url"] = args.pip_index
+        spec = {"needs": {"cpu": 1, "ram_mb": 1024}, "max_runtime_sec": 120,
+                "workload": workload, "target_node": node}
+        print(f"-> installing {','.join(packages)} on {node} "
+              f"(up to {timeout}s; cached on that node afterwards)...", flush=True)
+        r = call(C.submit(gw, spec, **cr), gw)
+        if r not in (0, None):
+            rc = r
+    print("\nnote: `aicn run` jobs must use the SAME --pip (and --pip-index) list "
+          "to hit this cache.")
+    return rc
+
+
 def main():
     cfg = load_config()
     ap = argparse.ArgumentParser(prog="aicn", description="AI Compute Network CLI")
@@ -249,9 +286,15 @@ def main():
     sub.add_parser("ls", help="list jobs")
     sub.add_parser("nodes", help="list the compute pool")
 
+    p = sub.add_parser("install", help="prewarm packages on nodes so jobs start fast")
+    p.add_argument("packages", help="comma-separated packages, e.g. numpy,tensorflow")
+    p.add_argument("--node", help="install on one node id (default: all connected nodes)")
+    p.add_argument("--pip-index", dest="pip_index", help="custom pip index URL (ROCm/CUDA wheels)")
+    p.add_argument("--pip-timeout", dest="pip_timeout", help="install budget, e.g. 60m (default 60m)")
+
     args = ap.parse_args()
-    handler = {"config": cmd_config, "run": cmd_run, "get": cmd_get,
-               "cancel": cmd_cancel, "ls": cmd_ls, "nodes": cmd_nodes}[args.cmd]
+    handler = {"config": cmd_config, "run": cmd_run, "get": cmd_get, "cancel": cmd_cancel,
+               "ls": cmd_ls, "nodes": cmd_nodes, "install": cmd_install}[args.cmd]
     sys.exit(handler(args, cfg) or 0)
 
 

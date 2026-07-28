@@ -71,6 +71,62 @@ The **gateway** stays source-run on the hub: `python gateway.py --host 0.0.0.0`.
 > `pip install --no-build-isolation --trusted-host pypi.org --trusted-host files.pythonhosted.org .`
 > (after `pip install -U setuptools wheel` with the same `--trusted-host` flags).
 
+## Set up a node (contribute compute)
+
+Install the package and run the agent. The node **dials out** to the gateway, so
+it works from behind NAT/firewalls with no port-forwarding.
+
+1. **Reach the gateway.** The agent defaults to the network's gateway address; if
+   that gateway is on a private overlay, join it first:
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+   ```
+   (On the same LAN as the gateway you can skip this and pass `--gateway ws://<lan-ip>:8765`.)
+
+2. **Install:**
+   ```bash
+   sudo apt install -y git pipx
+   pipx install git+https://github.com/<you>/aicn-compute
+   pipx ensurepath && exec bash            # put ~/.local/bin on PATH
+   ```
+   (SSL-intercepting network? see the Install note above for the `--trusted-host` /
+   `http.sslVerify` workarounds.)
+
+3. **Run the agent:**
+   ```bash
+   aicn-agent --node-id my-node
+   #   --gateway ws://<host>:8765   override the default gateway
+   #   --sandbox hardened           run untrusted code in a locked-down container (needs Docker)
+   #   --config node.json           scheduled hours / idle-detect / max_job caps / owner policy
+   ```
+
+4. **Verify** from any machine on the network: `aicn nodes` should list it as `available`.
+
+5. **Keep it running** across logout/reboot with a systemd service —
+   `/etc/systemd/system/aicn-node.service`:
+   ```ini
+   [Unit]
+   Description=AICN node agent
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   User=YOURUSER
+   ExecStart=/home/YOURUSER/.local/bin/aicn-agent --node-id my-node
+   Restart=on-failure
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl enable --now aicn-node
+   ```
+
+That's the whole onboarding: **join the overlay → `pipx install …` → `aicn-agent --node-id <name>`.**
+For lending to people you don't fully trust, always use `--sandbox hardened` and see the
+Owner allow-rules / secure-mode sections.
+
 ## Quick start
 
 ```bash
@@ -93,6 +149,8 @@ python aicn.py config set gateway ws://192.168.1.136:8765
 aicn run script.py --pip numpy --ram 4g --out ./results   # submit a script file
 aicn run train.py --gpu --target gpuserver-139 --pip torch # on the GPU node
 aicn run job.py --array 8 --out ./results                  # 8-task batch
+aicn install numpy,tensorflow                              # prewarm heavy deps on all nodes (once)
+aicn install torch --node gpuserver-139 --pip-index <url>  #   or on one node, with a custom index
 aicn ls                                                     # your jobs + status
 aicn nodes                                                  # the pool (cpu/ram/gpu/reliability)
 aicn get <job-id> --wait --out ./results                   # retrieve / follow
@@ -302,6 +360,12 @@ python client.py --script "import numpy as np; print(np.__version__)" --pip nump
 python client.py --job examples/numpy_job.json
 ```
 
+- **Heavy packages? Prewarm them.** For big/slow installs (TensorFlow, torch),
+  run `aicn install <packages>` **once** — it installs them into each node's cache
+  out of band (with a long timeout), so subsequent `aicn run --pip <same list>`
+  jobs start instantly instead of re-installing per job. Use the *same* `--pip`
+  (and `--pip-index`) list in both. Installs use `--prefer-binary` to avoid slow
+  source builds.
 - The packages install into an **isolated per-job directory** injected via a
   bootstrap, so they never touch the node's own venv.
 - Installs are **cached per node** (keyed by the requirement set + Python
