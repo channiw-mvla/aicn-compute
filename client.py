@@ -233,13 +233,14 @@ async def list_nodes(gateway_url, token=None, identity=None, tls_ca=None, insecu
 
 def _save_artifacts(artifacts, out_dir):
     n = 0
+    base = os.path.abspath(out_dir)
     for name, b64 in artifacts.items():
         try:
             data = base64.b64decode(b64)
         except Exception:
             continue
-        dest = os.path.normpath(os.path.join(out_dir, name))
-        if not dest.startswith(os.path.abspath(out_dir)):
+        dest = os.path.normpath(os.path.join(base, name))
+        if not (dest == base or dest.startswith(base + os.sep)):
             continue
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         with open(dest, "wb") as f:
@@ -305,8 +306,9 @@ def _handle_artifacts(artifacts, out_dir):
             continue
         print(f"  {name}  ({len(data)} bytes)")
         if out_dir:
-            dest = os.path.normpath(os.path.join(out_dir, name))
-            if not dest.startswith(os.path.abspath(out_dir)):
+            base = os.path.abspath(out_dir)
+            dest = os.path.normpath(os.path.join(base, name))
+            if not (dest == base or dest.startswith(base + os.sep)):
                 continue
             os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
             with open(dest, "wb") as f:
