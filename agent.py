@@ -16,9 +16,12 @@ Responsibilities:
 
 import argparse
 import asyncio
+import hmac
+import http.server
 import json
 import os
 import socket
+import threading
 import uuid
 
 import websockets
@@ -26,10 +29,13 @@ import websockets
 import identity as ID
 import protocol as P
 import tlsutil
-from hardware import detect_hardware
+from hardware import detect_hardware, sample_utilization
 from policy import Policy
 from sandbox import make_sandbox, docker_available
 from scheduler import Scheduler
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PANEL_HTML = os.path.join(HERE, "agent_panel.html")
 
 DEFAULT_CONFIG = {
     "node_id": None,
@@ -43,6 +49,10 @@ DEFAULT_CONFIG = {
     "schedule": [],
     "idle": {"require_idle": False, "idle_seconds": 300, "max_cpu_percent": 25},
     "max_job": {"ram_mb": 4096, "runtime_sec": 600},
+    "stats_interval_sec": 5,
+    # Local admin panel this node hosts itself (loopback by default, so only the
+    # machine's owner can reach it). Set host to 0.0.0.0 for LAN + a token.
+    "panel": {"enabled": True, "host": "127.0.0.1", "port": 8770, "token": None},
 }
 
 
@@ -81,6 +91,12 @@ class Agent:
         if self.policy.active:
             log(f"owner allow-rules active: {list(self.policy.cfg.keys())}")
 
+        self.config_path = config.get("config_path")   # for persisting remote schedule edits
+        self.stats_interval = float(config.get("stats_interval_sec", 5) or 5)
+        self.paused = False           # admin pause: stop taking new jobs (reversible)
+        self.last_stats = {}          # latest local utilization sample (for the panel)
+        self.panel_httpd = None
+
         self.loop = None
         self.ws = None
         self.fatal = False            # set on auth rejection to stop reconnecting
@@ -93,6 +109,7 @@ class Agent:
     # -- connection ----------------------------------------------------------
     async def run(self):
         self.loop = asyncio.get_running_loop()
+        self.start_panel()            # local admin panel, independent of the gateway link
         url = self.config["gateway_url"]
         ssl_param = (tlsutil.client_context(self.tls_ca, self.insecure)
                      if url.startswith("wss://") else None)
@@ -125,11 +142,13 @@ class Agent:
     async def _serve(self, ws):
         await self._register()
         monitor = asyncio.create_task(self._availability_monitor())
+        stats = asyncio.create_task(self._stats_monitor())
         try:
             async for raw in ws:
                 await self._on_message(P.decode(raw))
         finally:
             monitor.cancel()
+            stats.cancel()
 
     async def _register(self):
         state = P.AVAIL if self.available else P.UNAVAIL
@@ -140,6 +159,8 @@ class Agent:
             "hardware": self.hardware,
             "availability": state,
             "max_job": self.config.get("max_job", {}),
+            "schedule": self.config.get("schedule", []),
+            "paused": self.paused,
         }
         if self.token:
             reg["token"] = self.token
@@ -149,7 +170,10 @@ class Agent:
     # -- availability + instant reclaim -------------------------------------
     async def _availability_monitor(self):
         while True:
-            available, reason = self.scheduler.is_available()
+            sched_ok, reason = self.scheduler.is_available()
+            available = sched_ok and not self.paused
+            if self.paused:
+                reason = "paused"
             if available != self.available:
                 self.available = available
                 state = P.AVAIL if available else P.UNAVAIL
@@ -158,10 +182,117 @@ class Agent:
                     await P.send(self.ws,
                                  {"type": P.AVAILABILITY, "node_id": self.node_id,
                                   "state": state, "reason": reason})
-                # Instant reclaim: owner is back while a job runs -> evict it.
-                if not available and self.current_job_id is not None:
+                # Instant reclaim: the OWNER coming back (scheduler/idle) evicts a
+                # running job. A manual admin pause does NOT — it lets it finish.
+                if not available and not self.paused and self.current_job_id is not None:
                     await self._evict(reason)
             await asyncio.sleep(2)
+
+    async def _push_availability(self):
+        """Recompute and report availability immediately (after a control action)."""
+        sched_ok, reason = self.scheduler.is_available()
+        available = sched_ok and not self.paused
+        if self.paused:
+            reason = "paused"
+        self.available = available
+        state = P.AVAIL if available else P.UNAVAIL
+        log(f"availability -> {state} ({reason})")
+        if self.ws is not None:
+            await P.send(self.ws, {"type": P.AVAILABILITY, "node_id": self.node_id,
+                                   "state": state, "reason": reason})
+
+    # -- live telemetry ------------------------------------------------------
+    async def _stats_monitor(self):
+        """Push CPU/RAM/GPU utilization to the gateway on a fixed interval."""
+        while True:
+            try:
+                stats = await asyncio.to_thread(sample_utilization)
+                self.last_stats = stats          # keep for the local panel
+                if self.ws is not None:
+                    await P.send(self.ws, {"type": P.NODE_STATS,
+                                           "node_id": self.node_id, "stats": stats})
+            except Exception:
+                pass
+            await asyncio.sleep(self.stats_interval)
+
+    # -- admin control (relayed from the gateway; owner-only) ----------------
+    async def _apply_control(self, msg):
+        action = msg.get("action")
+        if action == P.CTL_PAUSE:
+            self.paused = True
+            log("admin: paused — will not accept new jobs (running job, if any, continues)")
+            await self._push_availability()
+        elif action == P.CTL_RESUME:
+            self.paused = False
+            log("admin: resumed")
+            await self._push_availability()
+        elif action == P.CTL_SET_SCHEDULE:
+            sched = msg.get("schedule") or []
+            self.config["schedule"] = sched
+            self.scheduler.config["schedule"] = sched
+            self._persist_schedule(sched)
+            log(f"admin: schedule updated ({len(sched)} window(s))")
+            await self._push_availability()
+        else:
+            log(f"admin: ignoring unknown control action {action!r}")
+
+    def _persist_schedule(self, schedule):
+        """Write the new schedule back to the node's config file so it survives a
+        restart. No-op when the node was started without --config."""
+        path = self.config_path
+        if not path:
+            return
+        try:
+            data = {}
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            data["schedule"] = schedule
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            log(f"persisted schedule to {path}")
+        except Exception as e:
+            log(f"could not persist schedule to {path}: {e}")
+
+    # -- local admin panel (hosted by this node) -----------------------------
+    def panel_snapshot(self) -> dict:
+        """Everything the local panel needs to render this one node."""
+        return {
+            "node_id": self.node_id,
+            "hardware": self.hardware,
+            "available": self.available,
+            "paused": self.paused,
+            "schedule": self.config.get("schedule", []),
+            "stats": self.last_stats,
+            "current_job": self.current_job_id,
+            "sandbox": self.sandbox_kind,
+            "gateway": self.config.get("gateway_url"),
+            "connected": self.ws is not None,
+        }
+
+    def start_panel(self):
+        """Serve a small local admin panel + JSON API for THIS node. Bound to
+        loopback by default, so only the machine's owner can reach it."""
+        cfg = self.config.get("panel") or {}
+        if cfg.get("enabled") is False:
+            log("local admin panel: disabled")
+            return
+        host = cfg.get("host") or "127.0.0.1"
+        port = int(cfg.get("port") or 8770)
+        token = cfg.get("token") or ""
+        handler = type("PanelHandler", (_PanelHTTP,), {"agent": self, "panel_token": token})
+        try:
+            httpd = http.server.ThreadingHTTPServer((host, port), handler)
+        except OSError as e:
+            log(f"local admin panel: could not bind {host}:{port} ({e}) — panel not started")
+            return
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.panel_httpd = httpd
+        loopback = host in ("127.0.0.1", "localhost", "::1")
+        note = ""
+        if not loopback and not token:
+            note = "  WARNING: reachable beyond this machine with NO token — set panel.token"
+        log(f"local admin panel: http://{host}:{port}{note}")
 
     async def _evict(self, reason):
         job_id = self.current_job_id
@@ -201,6 +332,8 @@ class Agent:
         elif mtype == P.CANCEL_JOB:
             if msg.get("job_id") == self.current_job_id and self.current_sandbox:
                 self.current_sandbox.cancel()
+        elif mtype == P.NODE_CONTROL:
+            await self._apply_control(msg)
 
     async def _run_job(self, msg):
         job_id = msg.get("job_id")
@@ -269,6 +402,82 @@ class Agent:
             f"exit={result['exit_code']} {result['runtime_sec']}s")
 
 
+class _PanelHTTP(http.server.BaseHTTPRequestHandler):
+    """HTTP server for a node's own local admin panel.
+
+    GET  /            -> the panel page
+    GET  /api/state   -> this node's live snapshot (JSON)
+    POST /api/control -> {action: pause|resume|set_schedule, schedule?} applied locally
+    """
+    agent = None
+    panel_token = ""
+
+    def _authed(self) -> bool:
+        if not self.panel_token:
+            return True
+        got = self.headers.get("X-AICN-Token", "")
+        return hmac.compare_digest(got, self.panel_token)
+
+    def _json(self, obj, code=200):
+        data = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        if path in ("/", "/index.html"):
+            try:
+                with open(PANEL_HTML, encoding="utf-8") as f:
+                    html = f.read()
+            except OSError:
+                self.send_error(500, "agent_panel.html not found")
+                return
+            html = html.replace('"{{TOKEN_REQUIRED}}"', "true" if self.panel_token else "false")
+            data = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        elif path == "/api/state":
+            if not self._authed():
+                self._json({"error": "unauthorized"}, 401)
+                return
+            self._json(self.agent.panel_snapshot())
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/api/control":
+            self.send_error(404)
+            return
+        if not self._authed():
+            self._json({"ok": False, "error": "unauthorized"}, 401)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            self._json({"ok": False, "error": "bad request body"}, 400)
+            return
+        if body.get("action") not in (P.CTL_PAUSE, P.CTL_RESUME, P.CTL_SET_SCHEDULE):
+            self._json({"ok": False, "error": "unknown action"}, 400)
+            return
+        try:
+            # hop onto the agent's event loop to mutate state + notify the gateway
+            fut = asyncio.run_coroutine_threadsafe(self.agent._apply_control(body), self.agent.loop)
+            fut.result(timeout=5)
+            self._json({"ok": True, "state": self.agent.panel_snapshot()})
+        except Exception as e:
+            self._json({"ok": False, "error": str(e)}, 500)
+
+    def log_message(self, *args):
+        pass  # keep the node console clean
+
+
 def load_config(path):
     config = dict(DEFAULT_CONFIG)
     if path and os.path.exists(path):
@@ -296,9 +505,15 @@ async def main():
                          "(locked-down container for untrusted code)")
     ap.add_argument("--sandbox-runtime", help="container runtime for the hardened sandbox, "
                     "e.g. 'runsc' for gVisor (kernel-level isolation)")
+    ap.add_argument("--panel-port", type=int, help="local admin panel port (default 8770)")
+    ap.add_argument("--panel-host", help="local admin panel bind host (default 127.0.0.1; "
+                    "use 0.0.0.0 to reach it from the LAN — then also set --panel-token)")
+    ap.add_argument("--panel-token", help="require this token to view/control the local panel")
+    ap.add_argument("--no-panel", action="store_true", help="do not host the local admin panel")
     args = ap.parse_args()
 
     config = load_config(args.config)
+    config["config_path"] = args.config   # remember where to persist remote schedule edits
     if args.gateway:
         config["gateway_url"] = args.gateway
     if args.node_id:
@@ -313,6 +528,17 @@ async def main():
         config["tls_ca"] = args.tls_ca
     if args.insecure:
         config["insecure"] = True
+
+    panel = dict(config.get("panel") or {})
+    if args.no_panel:
+        panel["enabled"] = False
+    if args.panel_port:
+        panel["port"] = args.panel_port
+    if args.panel_host:
+        panel["host"] = args.panel_host
+    if args.panel_token:
+        panel["token"] = args.panel_token
+    config["panel"] = panel
 
     agent = Agent(config, args.sandbox, args.sandbox_runtime)
     await agent.run()

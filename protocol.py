@@ -34,12 +34,16 @@ AUTH_OK = "AUTH_OK"        # gateway -> client (identity accepted)
 
 # --- dashboard <-> gateway --------------------------------------------------
 STATE = "STATE"                # gateway -> dashboard (live snapshot of the pool)
+CONTROL_INFO = "CONTROL_INFO"  # gateway -> dashboard (per-viewer: is control enabled + are you local)
 
 # --- node <-> gateway -------------------------------------------------------
 REGISTER = "REGISTER"          # both roles -> gateway (first message)
 REGISTERED = "REGISTERED"      # gateway -> either
 UNAUTHORIZED = "UNAUTHORIZED"  # gateway -> either (bad/missing shared-secret token)
 AVAILABILITY = "AVAILABILITY"  # node -> gateway (owner-availability changed)
+NODE_STATS = "NODE_STATS"      # node -> gateway (periodic CPU/RAM/GPU utilization)
+NODE_CONTROL = "NODE_CONTROL"  # dashboard -> gateway -> node (admin: pause/resume/schedule)
+CONTROL_RESULT = "CONTROL_RESULT"  # gateway -> dashboard (admin action accepted/denied)
 RUN_JOB = "RUN_JOB"            # gateway -> node
 CANCEL_JOB = "CANCEL_JOB"      # gateway -> node
 JOB_RESULT = "JOB_RESULT"      # node -> gateway -> requester
@@ -70,6 +74,11 @@ ST_CANCELLED = "cancelled"
 # --- availability states ----------------------------------------------------
 AVAIL = "AVAILABLE"
 UNAVAIL = "UNAVAILABLE"
+
+# --- admin node-control actions (owner-only, gated by the gateway admin token)
+CTL_PAUSE = "pause"            # stop taking new jobs (reversible; running job finishes)
+CTL_RESUME = "resume"          # undo a pause
+CTL_SET_SCHEDULE = "set_schedule"  # replace the node's recurring availability windows
 
 # --- job result statuses ----------------------------------------------------
 OK = "ok"

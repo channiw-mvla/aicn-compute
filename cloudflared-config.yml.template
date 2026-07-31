@@ -1,0 +1,29 @@
+# AICN gateway — Cloudflare NAMED tunnel config (stable public hostname).
+#
+# Prerequisites (run once, on the gateway box):
+#   1. Have a domain added to your Cloudflare account.
+#   2. cloudflared tunnel login                      # opens a browser to authorize
+#   3. cloudflared tunnel create aicn-gateway        # prints a TUNNEL-ID + creds file
+#   4. Save this file as ~/.cloudflared/config.yml, filling in the placeholders below.
+#   5. cloudflared tunnel route dns aicn-gateway gateway.YOURDOMAIN.com
+#   6. cloudflared tunnel run aicn-gateway           # or install as a service (see README)
+#
+# Then run the gateway with --trusted-proxy, and set join.sh's AICN_GATEWAY to
+#   wss://gateway.YOURDOMAIN.com
+
+tunnel: aicn-gateway
+credentials-file: /home/YOU/.cloudflared/TUNNEL-ID.json
+
+ingress:
+  # Public WebSocket endpoint for nodes + requesters. cloudflared handles the
+  # ws/wss upgrade automatically; the gateway speaks plain ws on localhost:8765.
+  - hostname: gateway.YOURDOMAIN.com
+    service: http://localhost:8765
+
+  # NOTE: the dashboard (port 8766) is deliberately NOT exposed here. Keep it on
+  # the LAN / Tailscale only, so node CONTROLS never sit on a public URL. If you
+  # do want a read-only public dashboard, add another hostname -> http://localhost:8766
+  # and rely on --trusted-proxy keeping control LAN-only.
+
+  # Catch-all: everything else gets a 404.
+  - service: http_status:404

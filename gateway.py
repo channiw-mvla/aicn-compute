@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import hmac
 import http.server
+import ipaddress
 import json
 import os
 import secrets
@@ -36,6 +37,14 @@ from reputation import RateLimiter, ReputationStore
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DASHBOARD_HTML = os.path.join(HERE, "dashboard.html")
+NODE_HTML = os.path.join(HERE, "node.html")
+
+# Networks trusted to CONTROL nodes (pause/resume/schedule). Local LAN + loopback
+# only by default — deliberately EXCLUDES the Tailscale/CGNAT range (100.64.0.0/10)
+# so remote/public users on the overlay can watch but never touch nodes.
+_DEFAULT_CONTROL_NETS = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
+                         "192.168.0.0/16", "169.254.0.0/16",
+                         "::1/128", "fc00::/7", "fe80::/10")
 
 
 class Node:
@@ -50,6 +59,9 @@ class Node:
         self.fail = 0
         self.identity = None
         self.rep_key = node_id        # reputation key (overridden to identity fp in secure mode)
+        self.stats = {}               # latest live utilization (CPU/RAM/GPU) from the node
+        self.paused = False           # admin pause (reversible); stops new job assignment
+        self.schedule = []            # node's recurring availability windows (for the dashboard)
 
     @property
     def reliability(self):
@@ -78,15 +90,34 @@ class Job:
 
 class Gateway:
     def __init__(self, token=None, authorized_keys_path=None, reputation_path=None,
-                 max_jobs_per_min=0, max_concurrent=0, min_reliability=0.0):
+                 max_jobs_per_min=0, max_concurrent=0, min_reliability=0.0,
+                 admin_token=None, control_cidrs=None, auto_approve_nodes=False,
+                 trust_proxy=False):
         self.nodes = {}               # node_id -> Node
         self.jobs = {}                # job_id -> Job
         self.observers = set()        # dashboard websockets
         self.events = deque(maxlen=60)  # recent activity for the dashboard
         self.token = token or None    # shared secret; None = open (LAN mode)
+        # Owner-only node control (pause/resume/schedule). None = control disabled.
+        self.admin_token = admin_token or None
+        # Networks allowed to control nodes (LAN + loopback by default).
+        nets = [ipaddress.ip_network(c) for c in _DEFAULT_CONTROL_NETS]
+        for c in (control_cidrs or []):
+            try:
+                nets.append(ipaddress.ip_network(c, strict=False))
+            except ValueError:
+                self.log(f"ignoring invalid --control-cidr {c!r}")
+        self.control_nets = nets
         # Phase 3 secure mode: when set, node/requester must pass keypair auth.
         self.authorized_keys_path = authorized_keys_path
         self.secure = bool(authorized_keys_path)
+        # Open enrollment: a brand-new NODE key is approved on first contact (still
+        # gets a unique identity, so it stays revocable + reputation-tracked).
+        self.auto_approve_nodes = bool(auto_approve_nodes)
+        # Behind a local reverse proxy / tunnel (e.g. cloudflared): trust the
+        # forwarded client-IP header so the LAN-only control gate sees the REAL
+        # client, not the proxy's 127.0.0.1. Only honored for loopback peers.
+        self.trust_proxy = bool(trust_proxy)
         # Phase 3 reputation + abuse limits.
         self.reputation = ReputationStore(reputation_path)
         self.rate_limiter = RateLimiter(max_jobs_per_min, 60)
@@ -108,6 +139,7 @@ class Gateway:
         return {
             "type": P.STATE,
             "protocol": P.PROTOCOL,
+            "control_enabled": bool(self.admin_token),
             "nodes": [{
                 "id": n.id,
                 "hardware": n.hardware,
@@ -117,6 +149,9 @@ class Gateway:
                 "ok": n.ok,
                 "fail": n.fail,
                 "reliability": round(n.reliability, 3),
+                "stats": n.stats,
+                "paused": n.paused,
+                "schedule": n.schedule,
             } for n in self.nodes.values()],
             "jobs_active": sum(1 for j in self.jobs.values() if j.status == P.ST_RUNNING),
             "jobs_queued": len(self.queue),
@@ -349,6 +384,68 @@ class Gateway:
             return False
         return host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    @staticmethod
+    def _strip_mapped(host):
+        if host and host.startswith("::ffff:"):   # IPv4-mapped IPv6
+            host = host[len("::ffff:"):]
+        return host
+
+    @staticmethod
+    def _peer_host(ws):
+        try:
+            host = ws.remote_address[0]
+        except Exception:
+            return None
+        return Gateway._strip_mapped(host)
+
+    @staticmethod
+    def _header(ws, name):
+        """Case-insensitive lookup of a request header from the WS handshake,
+        tolerating both old (request_headers) and new (request.headers) APIs."""
+        try:
+            h = getattr(ws, "request_headers", None)
+            if h is None:
+                req = getattr(ws, "request", None)
+                h = getattr(req, "headers", None) if req is not None else None
+            if h is None:
+                return None
+            return h.get(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_loopback_host(host) -> bool:
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except (ValueError, TypeError):
+            return False
+
+    def _client_host(self, ws):
+        """The REAL client IP for policy decisions. Behind a trusted local proxy
+        (cloudflared), the socket peer is 127.0.0.1, so use the forwarded header
+        instead — but only when the peer really is loopback, so a direct client
+        can't spoof it. cloudflared always sets the header, so a loopback peer
+        with NO header is a genuine local process (the operator on the box)."""
+        peer = self._peer_host(ws)
+        if self.trust_proxy and self._is_loopback_host(peer):
+            fwd = self._header(ws, "CF-Connecting-IP") or self._header(ws, "X-Forwarded-For")
+            if fwd:
+                return self._strip_mapped(fwd.split(",")[0].strip())
+        return peer
+
+    def _control_allowed(self, ws) -> bool:
+        """True only if the client is on a trusted (local) network. This is the
+        authoritative gate for pause/resume/schedule — the token alone is not
+        enough; the request must also originate from the LAN."""
+        host = self._client_host(ws)
+        if not host:
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return any(ip in net for net in self.control_nets)
+
     # -- connection handling -------------------------------------------------
     async def handle(self, ws):
         try:
@@ -361,8 +458,9 @@ class Gateway:
             if mtype == P.HELLO:
                 await self._secure_session(ws, first)
             elif (mtype == P.REGISTER and first.get("role") == P.ROLE_DASHBOARD
-                  and self._is_loopback(ws)):
-                # the operator's local dashboard is allowed without keypair auth
+                  and self._control_allowed(ws)):
+                # the operator's LOCAL dashboard (LAN + loopback, same trusted
+                # boundary as node control) is allowed without keypair auth
                 await self._requester_session(ws, first, observe=True)
             else:
                 await P.send(ws, {"type": P.UNAUTHORIZED,
@@ -418,17 +516,33 @@ class Gateway:
             return
 
         # Ownership proven — now decide on approval status.
+        auto = self.auto_approve_nodes and role == P.ROLE_NODE
         if entry is None:
-            keys[pubkey] = {"role": role, "label": "", "status": "pending",
+            status = "approved" if auto else "pending"
+            keys[pubkey] = {"role": role, "label": "", "status": status,
                             "first_seen": _now(), "fingerprint": fp}
+            if auto:
+                keys[pubkey]["approved_at"] = _now()
+                keys[pubkey]["auto"] = True
             ID.save_keystore(self.authorized_keys_path, keys)
-            await P.send(ws, {"type": P.UNAUTHORIZED,
-                              "reason": f"key {fp} recorded, pending approval — ask the admin to approve it"})
-            self.log(f"NEW {role} key {fp} recorded pending approval")
-            return
+            if not auto:
+                await P.send(ws, {"type": P.UNAUTHORIZED,
+                                  "reason": f"key {fp} recorded, pending approval — ask the admin to approve it"})
+                self.log(f"NEW {role} key {fp} recorded pending approval")
+                return
+            entry = keys[pubkey]
+            self.log(f"AUTO-ENROLLED node {fp} (open enrollment)")
         if entry.get("status") != "approved":
-            await P.send(ws, {"type": P.UNAUTHORIZED, "reason": f"key {fp} is pending approval"})
-            return
+            # A node that was pending gets auto-approved too when open enrollment is on.
+            if auto and entry.get("status") == "pending":
+                entry["status"] = "approved"
+                entry["approved_at"] = _now()
+                entry["auto"] = True
+                ID.save_keystore(self.authorized_keys_path, keys)
+                self.log(f"AUTO-ENROLLED node {fp} (was pending)")
+            else:
+                await P.send(ws, {"type": P.UNAUTHORIZED, "reason": f"key {fp} is pending approval"})
+                return
 
         label = entry.get("label") or fp
         await P.send(ws, {"type": P.AUTH_OK, "fingerprint": fp, "label": label})
@@ -452,6 +566,8 @@ class Gateway:
             max_job=reg.get("max_job", {}),
         )
         node.identity = identity
+        node.schedule = reg.get("schedule", []) or []
+        node.paused = bool(reg.get("paused"))
         if identity:
             node.rep_key = identity["fp"]
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
@@ -480,10 +596,14 @@ class Gateway:
         mtype = msg.get("type")
         if mtype == P.AVAILABILITY:
             node.available = (msg.get("state") == P.AVAIL)
+            node.paused = (msg.get("reason") == "paused")   # keep pause state in sync
             self.log(f"node {node.id} availability -> {msg.get('state')} ({msg.get('reason','')})")
             await self.push()
             if node.available:
                 await self._drain_queue()   # newly-available node can take waiting jobs
+        elif mtype == P.NODE_STATS:
+            node.stats = msg.get("stats", {}) or {}
+            await self.push()               # live utilization to the dashboards
         elif mtype == P.JOB_RESULT:
             job_id = msg.get("job_id")
             job = self.jobs.get(job_id)            # keep it in the store, don't pop
@@ -535,6 +655,9 @@ class Gateway:
         await P.send(ws, {"type": P.REGISTERED, "requester_id": req_id})
         if observe:
             self.observers.add(ws)
+            await P.send(ws, {"type": P.CONTROL_INFO,
+                              "enabled": bool(self.admin_token),
+                              "local": self._control_allowed(ws)})
             await P.send(ws, self.build_state())
         self.log(f"{who} {req_id} connected", record=not observe)
         rep_key = (identity["fp"] if identity else req_id)
@@ -554,6 +677,8 @@ class Gateway:
                     await self._handle_nodes(ws)
                 elif mtype == P.CANCEL_JOB:
                     await self._handle_cancel(ws, msg, rep_key)
+                elif mtype == P.NODE_CONTROL:
+                    await self._handle_control(ws, msg)
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -641,6 +766,58 @@ class Gateway:
                  for n in self.nodes.values()]
         await P.send(ws, {"type": P.NODES_LIST, "nodes": nodes})
 
+    async def _handle_control(self, ws, msg):
+        """Owner-only node control: pause / resume / set schedule. Gated by the
+        gateway admin token so a public viewer can watch but never touch nodes."""
+        def deny(reason):
+            return P.send(ws, {"type": P.CONTROL_RESULT, "ok": False, "reason": reason})
+
+        # Network boundary first (don't even reveal whether control is enabled to
+        # a remote client): pause/resume/schedule are local-network only.
+        if not self._control_allowed(ws):
+            self.log(f"rejected node-control from non-local client {self._client_host(ws)}")
+            await deny("node control is restricted to the local network")
+            return
+        if not self.admin_token:
+            await deny("node control is disabled — start the gateway with "
+                       "--admin-token / AICN_ADMIN_TOKEN to enable it")
+            return
+        presented = str(msg.get("admin_token") or "")
+        if not hmac.compare_digest(presented, self.admin_token):
+            self.log("rejected node-control: bad admin token")
+            await deny("invalid admin token")
+            return
+        node_id = msg.get("node_id")
+        node = self.nodes.get(node_id)
+        if node is None:
+            await deny(f"node '{node_id}' is not connected")
+            return
+        action = msg.get("action")
+        if action not in (P.CTL_PAUSE, P.CTL_RESUME, P.CTL_SET_SCHEDULE):
+            await deny(f"unknown action {action!r}")
+            return
+
+        relay = {"type": P.NODE_CONTROL, "action": action}
+        if action == P.CTL_SET_SCHEDULE:
+            relay["schedule"] = msg.get("schedule") or []
+        try:
+            await P.send(node.ws, relay)
+        except Exception:
+            await deny("failed to reach the node")
+            return
+
+        # Optimistic local update; the node's AVAILABILITY reply confirms/corrects it.
+        if action == P.CTL_PAUSE:
+            node.paused = True
+        elif action == P.CTL_RESUME:
+            node.paused = False
+        elif action == P.CTL_SET_SCHEDULE:
+            node.schedule = relay["schedule"]
+        self.log(f"admin control '{action}' -> node {node_id}")
+        await P.send(ws, {"type": P.CONTROL_RESULT, "ok": True,
+                          "node_id": node_id, "action": action})
+        await self.push()
+
     async def _handle_cancel(self, ws, msg, rep_key):
         jid = msg.get("job_id")
         job = self.jobs.get(jid)
@@ -674,18 +851,28 @@ class _DashboardHTTP(http.server.BaseHTTPRequestHandler):
     ws_scheme = "ws"
 
     def do_GET(self):
-        if self.path.split("?")[0] not in ("/", "/index.html", "/dashboard"):
+        path = self.path.split("?")[0]
+        node_id = None
+        if path in ("/", "/index.html", "/dashboard"):
+            src = DASHBOARD_HTML
+        elif path.startswith("/node/") and len(path) > len("/node/"):
+            from urllib.parse import unquote
+            node_id = unquote(path[len("/node/"):]).strip("/")
+            src = NODE_HTML
+        else:
             self.send_error(404)
             return
         try:
-            with open(DASHBOARD_HTML, encoding="utf-8") as f:
+            with open(src, encoding="utf-8") as f:
                 html = f.read()
         except OSError:
-            self.send_error(500, "dashboard.html not found")
+            self.send_error(500, f"{os.path.basename(src)} not found")
             return
         html = html.replace("{{WS_PORT}}", str(self.ws_port))
         html = html.replace("{{WS_SCHEME}}", self.ws_scheme)
         html = html.replace('"{{TOKEN}}"', json.dumps(self.token or ""))
+        if node_id is not None:
+            html = html.replace('"{{NODE_ID}}"', json.dumps(node_id))
         data = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -732,8 +919,22 @@ async def main():
     ap.add_argument("--no-dashboard", action="store_true", help="disable the web dashboard")
     ap.add_argument("--token", help="shared-secret token required from every client "
                     "(safer to set via the AICN_TOKEN env var so it isn't in the process list)")
+    ap.add_argument("--admin-token", help="enable owner-only node control (pause/resume/schedule) "
+                    "from the dashboard; holders of this token can control nodes (env: AICN_ADMIN_TOKEN)")
+    ap.add_argument("--control-cidr", help="extra network(s) allowed to control nodes, comma-separated "
+                    "CIDR (e.g. 100.64.0.0/10 to also allow your Tailscale range). Default: local LAN + "
+                    "loopback only — control is refused from anywhere else, even with a valid admin token.")
+    ap.add_argument("--trusted-proxy", action="store_true",
+                    help="the gateway sits behind a LOCAL reverse proxy / tunnel (e.g. cloudflared): read "
+                         "the real client IP from CF-Connecting-IP / X-Forwarded-For so the LAN-only "
+                         "control gate isn't fooled into treating every proxied client as local. Only "
+                         "enable when a trusted proxy on this host is the sole way in. (env: AICN_TRUSTED_PROXY=1)")
     ap.add_argument("--authorized-keys", help="path to the approved-keys JSON store; enables "
                     "Phase 3 secure mode (keypair challenge-response auth). Manage it with authctl.py")
+    ap.add_argument("--auto-approve-nodes", action="store_true",
+                    help="open enrollment: auto-approve a new NODE's key on first connect (it still gets "
+                         "a unique identity, so it stays revocable + reputation-tracked). Requesters still "
+                         "need manual approval. Requires --authorized-keys. (env: AICN_AUTO_APPROVE_NODES=1)")
     ap.add_argument("--tls-cert", help="TLS certificate (PEM) to serve wss:// and https dashboard")
     ap.add_argument("--tls-key", help="TLS private key (PEM) matching --tls-cert")
     ap.add_argument("--reputation", help="path to the persistent reputation JSON store "
@@ -747,11 +948,17 @@ async def main():
     args = ap.parse_args()
 
     token = args.token or os.environ.get("AICN_TOKEN") or None
+    admin_token = args.admin_token or os.environ.get("AICN_ADMIN_TOKEN") or None
+    control_cidr = args.control_cidr or os.environ.get("AICN_CONTROL_CIDR") or ""
+    control_cidrs = [c.strip() for c in control_cidr.split(",") if c.strip()]
     keys_path = args.authorized_keys or os.environ.get("AICN_AUTHORIZED_KEYS") or None
     rep_path = args.reputation or os.environ.get("AICN_REPUTATION") or None
+    auto_approve = args.auto_approve_nodes or os.environ.get("AICN_AUTO_APPROVE_NODES") in ("1", "true", "yes")
+    trust_proxy = args.trusted_proxy or os.environ.get("AICN_TRUSTED_PROXY") in ("1", "true", "yes")
     gw = Gateway(token=token, authorized_keys_path=keys_path, reputation_path=rep_path,
                  max_jobs_per_min=args.max_jobs_per_min, max_concurrent=args.max_concurrent,
-                 min_reliability=args.min_reliability)
+                 min_reliability=args.min_reliability, admin_token=admin_token,
+                 control_cidrs=control_cidrs, auto_approve_nodes=auto_approve, trust_proxy=trust_proxy)
     if rep_path:
         log(f"reputation store: {rep_path}")
     if args.max_jobs_per_min or args.max_concurrent:
@@ -773,9 +980,21 @@ async def main():
             "overlay (already encrypted); for a public gateway add --tls-cert/--tls-key.")
     if gw.secure:
         log(f"SECURE MODE — keypair auth required (approved-keys: {keys_path}). "
-            "Nodes/requesters must be approved via authctl.py; local dashboard allowed from loopback.")
+            "Nodes/requesters must be approved via authctl.py; local dashboard allowed from the LAN.")
+        if auto_approve:
+            log("OPEN ENROLLMENT — new nodes auto-join on first connect (unique identity, still "
+                "revocable via authctl.py). Requesters still require manual approval.")
+    elif auto_approve:
+        log("WARNING: --auto-approve-nodes has no effect without --authorized-keys (secure mode). "
+            "Ignoring — the gateway is in open mode where any node can already connect.")
     if token:
         log("shared-secret token ENABLED — clients must present a matching token.")
+    if admin_token:
+        extra = f" plus {', '.join(control_cidrs)}" if control_cidrs else ""
+        log(f"node control ENABLED — pause/resume/schedule require the admin token AND a client "
+            f"on the local network (LAN + loopback{extra}). Remote/overlay viewers are monitor-only.")
+    else:
+        log("node control DISABLED — dashboard is monitor-only (set --admin-token / AICN_ADMIN_TOKEN to enable).")
     if public and not token:
         log("WARNING: binding to a non-loopback address with NO token. The gateway "
             "runs arbitrary submitted code in sandboxes on your nodes — do NOT expose "
@@ -784,6 +1003,10 @@ async def main():
         log("WARNING: token is sent in cleartext over ws:// (no TLS until Phase 3). "
             "It blocks casual/unauthenticated access but not a network sniffer — for "
             "real exposure use a private overlay (Tailscale/WireGuard) or wss.")
+
+    if trust_proxy:
+        log("TRUSTED PROXY mode — real client IP read from CF-Connecting-IP/X-Forwarded-For for "
+            "loopback peers (for a cloudflared tunnel or similar local reverse proxy).")
 
     if not args.no_dashboard:
         http_scheme = "https" if ssl_ctx else "http"

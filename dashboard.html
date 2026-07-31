@@ -54,6 +54,33 @@
   .node .gpu-row { color: var(--text); }
   .node .gpu-row .vendor { color: var(--busy); font-size: 11px; text-transform: uppercase; }
   .node .gpu-row.none { color: var(--muted); }
+  .node .util { margin-top: 10px; display: grid; gap: 6px; }
+  .bar { display: grid; grid-template-columns: 40px 1fr 62px; gap: 8px; align-items: center;
+    font-size: 11px; color: var(--muted); }
+  .bar .k { color: #5a6673; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+  .bar .track { height: 8px; background: #0d1117; border: 1px solid var(--line);
+    border-radius: 6px; overflow: hidden; }
+  .bar .fill { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
+  .bar .fill.mid { background: var(--warn); }
+  .bar .fill.hi { background: var(--bad); }
+  .bar .v { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  .node .sched { margin-top: 10px; font-size: 11px; color: var(--muted);
+    border-top: 1px dashed var(--line); padding-top: 8px; }
+  .node .sched .k { color: #5a6673; text-transform: uppercase; font-size: 10px;
+    letter-spacing: .5px; margin-right: 6px; }
+  .node .sched b { color: var(--text); font-weight: 600; }
+  .node .paused-tag { color: var(--warn); font-weight: 600; }
+  .node .panellink { margin-left: 8px; font-size: 11px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .node .panellink:hover { text-decoration: underline; }
+  .node .ctl { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .node .ctl button { width: auto; font-size: 11px; padding: 4px 12px; background: var(--panel);
+    border: 1px solid var(--line); color: var(--text); cursor: pointer; border-radius: 6px; }
+  .node .ctl button:hover { border-color: var(--accent); color: var(--accent); }
+  .node .ctl button.resume { border-color: var(--ok); color: var(--ok); }
+  #admin { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  #admin input { width: 190px; padding: 5px 9px; font-size: 12px; }
+  #admin .lbl { color: var(--muted); font-size: 12px; }
+  #conn { margin-left: 12px; }
   .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
   label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   select, input, textarea, button { font: inherit; color: var(--text);
@@ -100,6 +127,10 @@
 <header>
   <h1>AICN · Compute Pool</h1>
   <span class="sub">Phase 1 · LAN</span>
+  <span id="admin" style="display:none">
+    <span class="lbl">admin token</span>
+    <input id="adminToken" type="password" placeholder="required to control nodes" autocomplete="off">
+  </span>
   <span id="conn">connecting…</span>
 </header>
 
@@ -174,6 +205,9 @@ let ws, connected = false;
 const jobs = {}; // job_id -> result card element
 let selectedNode = null;  // pinned target node id, or null = auto-match
 let lastNodes = [];       // most recent node list (for re-render on selection)
+let serverControl = false;   // gateway has an admin token
+let amLocal = false;         // this viewer is on the gateway's local network
+let controlEnabled = false;  // = serverControl && amLocal (both required to control)
 
 function setConn(state, text) {
   const el = $("conn");
@@ -206,7 +240,13 @@ function connect() {
 function handle(msg) {
   switch (msg.type) {
     case "UNAUTHORIZED": setConn("down", "unauthorized — bad token"); $("submit").disabled = true; break;
-    case "STATE": renderNodes(msg.nodes); renderEvents(msg.events); renderStats(msg); break;
+    case "CONTROL_INFO":
+      serverControl = !!msg.enabled; amLocal = !!msg.local; recomputeControl();
+      renderNodes(lastNodes); break;
+    case "STATE":
+      serverControl = !!msg.control_enabled; recomputeControl();
+      renderNodes(msg.nodes); renderEvents(msg.events); renderStats(msg); break;
+    case "CONTROL_RESULT": onControlResult(msg); break;
     case "JOB_ACCEPTED": markAccepted(msg); break;
     case "JOB_LOG": appendLog(msg); break;
     case "JOB_RESULT": markResult(msg); break;
@@ -227,8 +267,9 @@ function renderNodes(nodes) {
   if (!nodes.length) { box.innerHTML = '<div class="empty">No devices connected yet.</div>'; return; }
   box.innerHTML = "";
   for (const n of nodes) {
-    const state = !n.available ? "off" : (n.busy ? "busy" : "available");
-    const label = !n.available ? "unavailable" : (n.busy ? "running" : "available");
+    const paused = !!n.paused;
+    const state = (paused || !n.available) ? "off" : (n.busy ? "busy" : "available");
+    const label = paused ? "paused" : (!n.available ? "unavailable" : (n.busy ? "running" : "available"));
     const hw = n.hardware || {};
     const rel = Math.round((n.reliability ?? 1) * 100);
 
@@ -246,12 +287,39 @@ function renderNodes(nodes) {
 
     const host = [hw.hostname, hw.os, hw.arch].filter(Boolean).map(esc).join(" · ") || "?";
 
+    // live utilization bars
+    const st = n.stats || {};
+    let utilHtml = bar("CPU", st.cpu_percent)
+      + bar("RAM", st.ram_percent, st.ram_used_mb != null ? fmtMB(st.ram_used_mb) : null);
+    (st.gpus || []).forEach((g, i) => {
+      const memPct = (g.mem_percent != null) ? g.mem_percent
+        : (g.mem_used_mb != null && g.mem_total_mb) ? 100 * g.mem_used_mb / g.mem_total_mb : null;
+      const memVal = (g.mem_used_mb != null && g.mem_total_mb)
+        ? `${fmtMB(g.mem_used_mb)}/${fmtMB(g.mem_total_mb)}` : null;
+      const multi = (st.gpus.length > 1);
+      utilHtml += bar(multi ? `GPU${i}` : "GPU", g.util_percent);
+      utilHtml += bar(multi ? `VRAM${i}` : "VRAM", memPct, memVal);
+    });
+
+    const schedHtml = `<div class="sched"><span class="k">schedule</span>`
+      + `<b>${esc(schedText(n.schedule))}</b>`
+      + (paused ? ` · <span class="paused-tag">paused by admin</span>` : ``) + `</div>`;
+
+    let ctlHtml = "";
+    if (controlEnabled) {
+      ctlHtml = `<div class="ctl">
+        <button data-act="toggle" class="${paused ? "resume" : ""}">${paused ? "Resume" : "Pause"}</button>
+        <button data-act="sched">Edit schedule</button>
+      </div>`;
+    }
+
     const el = document.createElement("div");
     el.className = "node" + (n.id === selectedNode ? " selected" : "");
     el.title = "Click to pin the next job to this device";
     el.onclick = () => selectNode(n.id);
     el.innerHTML = `
       <div class="name"><span class="dot ${state}"></span>${esc(n.id)}
+        <a class="panellink" href="/node/${encodeURIComponent(n.id)}" title="Open this node's admin panel">panel ↗</a>
         <span class="badge ${state}">${label}</span><span class="pin">📌 pinned</span></div>
       <div class="specs">
         <div class="spec"><span class="k">Host</span><span>${host}</span></div>
@@ -259,9 +327,66 @@ function renderNodes(nodes) {
         <div class="spec"><span class="k">RAM</span><span><b>${fmtMB(hw.ram_mb)}</b></span></div>
         <div class="spec"><span class="k">GPU</span><span>${gpuHtml}</span></div>
         <div class="spec"><span class="k">Rel.</span><span><b>${rel}%</b> · ${n.ok}✓ / ${n.fail}✗</span></div>
-      </div>`;
+      </div>
+      <div class="util">${utilHtml}</div>
+      ${schedHtml}
+      ${ctlHtml}`;
+    // the panel link must not toggle the pin-to-node selection
+    el.querySelectorAll(".panellink").forEach(a => a.addEventListener("click", ev => ev.stopPropagation()));
+    // control buttons must not trigger the pin-to-node click
+    el.querySelectorAll(".ctl button").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      if (b.dataset.act === "toggle") sendControl(n.id, n.paused ? "resume" : "pause");
+      else editSchedule(n.id, n.schedule);
+    }));
     box.appendChild(el);
   }
+}
+
+function bar(label, pct, extra) {
+  const has = pct != null && !isNaN(pct);
+  const p = has ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
+  const cls = !has ? "" : (p >= 85 ? "hi" : p >= 60 ? "mid" : "");
+  const v = extra != null ? extra : (has ? p + "%" : "—");
+  return `<div class="bar"><span class="k">${esc(label)}</span>`
+    + `<span class="track"><span class="fill ${cls}" style="width:${p}%"></span></span>`
+    + `<span class="v">${esc(v)}</span></div>`;
+}
+
+const DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+function schedText(sched) {
+  if (!sched || !sched.length) return "always available";
+  return sched.map(w => {
+    const days = Array.isArray(w.days) ? w.days.map(d => DAYS[d] ?? d).join(" ") : "every day";
+    return `${days} ${w.start || "00:00"}–${w.end || "24:00"}`;
+  }).join("   ·   ");
+}
+
+// -- admin node control --
+function recomputeControl() { controlEnabled = serverControl && amLocal; updateAdminUI(); }
+function updateAdminUI() { $("admin").style.display = controlEnabled ? "flex" : "none"; }
+function adminToken() { const el = $("adminToken"); return el ? el.value.trim() : ""; }
+function sendControl(id, action, extra) {
+  if (!connected) return;
+  const tok = adminToken();
+  if (!tok) { alert("Enter the admin token (top of the page) to control nodes."); $("adminToken").focus(); return; }
+  ws.send(JSON.stringify(Object.assign({ type: "NODE_CONTROL", node_id: id, action, admin_token: tok }, extra || {})));
+}
+function editSchedule(id, sched) {
+  const cur = JSON.stringify(sched || [], null, 2);
+  const help = "Edit the availability schedule for " + id + ".\n"
+    + 'A JSON list of windows: {"days":[0-6 = Mon-Sun], "start":"HH:MM", "end":"HH:MM"}\n'
+    + "Empty list [] = always available.";
+  const edited = prompt(help, cur);
+  if (edited == null) return;
+  let parsed;
+  try { parsed = JSON.parse(edited); if (!Array.isArray(parsed)) throw 0; }
+  catch (e) { alert("Invalid schedule — expected a JSON list of windows."); return; }
+  sendControl(id, "set_schedule", { schedule: parsed });
+}
+function onControlResult(m) {
+  // success shows up in the next STATE push (paused flag / schedule / availability)
+  if (!m.ok) alert("Control failed: " + (m.reason || "unknown"));
 }
 
 function selectNode(id) {
@@ -434,6 +559,9 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<":
 
 $("submit").addEventListener("click", submitJob);
 $("refreshJobs").addEventListener("click", refreshJobs);
+// remember the admin token locally (never sent to the page by the gateway)
+$("adminToken").value = localStorage.getItem("aicn_admin") || "";
+$("adminToken").addEventListener("input", () => localStorage.setItem("aicn_admin", adminToken()));
 connect();
 </script>
 </body>

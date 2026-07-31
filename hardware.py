@@ -196,6 +196,90 @@ def _cpu_model() -> str:
     return platform.processor() or "unknown"
 
 
+def _to_int(text):
+    try:
+        return int(float(str(text).strip()))
+    except (ValueError, TypeError):
+        return None
+
+
+def _sample_nvidia_util() -> list:
+    smi = _nvidia_smi()
+    if not smi:
+        return []
+    try:
+        out = subprocess.run(
+            [smi, "--query-gpu=utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return []
+    gpus = []
+    for line in out.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            gpus.append({"util_percent": _to_int(parts[0]),
+                         "mem_used_mb": _to_int(parts[1]),
+                         "mem_total_mb": _to_int(parts[2])})
+    return gpus
+
+
+def _sample_amd_util() -> list:
+    smi = shutil.which("rocm-smi")
+    if not smi:
+        return []
+    try:
+        out = subprocess.run([smi, "--showuse", "--showmemuse"],
+                             capture_output=True, text=True, timeout=8)
+    except Exception:
+        return []
+    import re
+    use, memuse = {}, {}
+    for line in out.stdout.splitlines():
+        m = re.search(r"GPU\[(\d+)\]", line)
+        if not m or "%" not in line:
+            continue
+        idx = int(m.group(1))
+        nums = re.findall(r"\d+", line.split(":")[-1])
+        if not nums:
+            continue
+        val = int(nums[-1])
+        if "memory" in line.lower():
+            memuse[idx] = val
+        else:
+            use[idx] = val
+    return [{"util_percent": use.get(i), "mem_percent": memuse.get(i)}
+            for i in sorted(set(use) | set(memuse))]
+
+
+def _sample_gpu_util() -> list:
+    """Best-effort per-GPU utilization. NVIDIA reports util + memory MB; AMD
+    reports util % + memory %. Any field may be None; empty list if unknown."""
+    gpus = _sample_nvidia_util()
+    return gpus if gpus else _sample_amd_util()
+
+
+def sample_utilization(sample_gpu=True) -> dict:
+    """Live utilization snapshot for the monitoring dashboard. CPU% is measured
+    since the previous call (psutil), so call it on a fixed interval."""
+    cpu = ram_pct = ram_used = None
+    if psutil is not None:
+        try:
+            cpu = psutil.cpu_percent(interval=None)
+            vm = psutil.virtual_memory()
+            ram_pct = vm.percent
+            ram_used = int(vm.used / (1024 * 1024))
+        except Exception:
+            pass
+    return {
+        "cpu_percent": cpu,
+        "ram_percent": ram_pct,
+        "ram_used_mb": ram_used,
+        "gpus": _sample_gpu_util() if sample_gpu else [],
+    }
+
+
 def detect_hardware() -> dict:
     """Snapshot of this device's advertisable capabilities."""
     gpus = _detect_gpus()
