@@ -1,0 +1,23 @@
+[Unit]
+# AICN node agent — runs on EACH node box. Needs Docker for the hardened sandbox.
+# Set AICN_GATEWAY and AICN_NODE_ID in the EnvironmentFile (see aicn.env.example).
+Description=AICN node agent
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=wchanning
+# so the agent can talk to Docker without sudo (the user must also be in this group)
+SupplementaryGroups=docker
+WorkingDirectory=/home/wchanning/aicn
+EnvironmentFile=/home/wchanning/aicn/aicn.env
+ExecStart=/home/wchanning/aicn/venv/bin/python agent.py \
+  --gateway ${AICN_GATEWAY} --node-id ${AICN_NODE_ID} \
+  --secure --sandbox hardened --max-job-ram 24g
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

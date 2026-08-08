@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AICN{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:640px;">
+  <div class="card">
+    <h1>You're in 👋</h1>
+    <p class="sub">Signed in as <b style="color:var(--text)">{{ user["email"] }}</b></p>
+    <p class="muted">
+      Your account is ready. Organizations and servers are coming next:
+    </p>
+    <ul class="muted" style="line-height:1.8; margin-top:8px;">
+      <li>Create an organization and invite members <span style="color:#5a6673">(Phase 2)</span></li>
+      <li>Add your servers and share them into orgs <span style="color:#5a6673">(Phase 3)</span></li>
+      <li>Run jobs on your org's pool <span style="color:#5a6673">(Phase 4)</span></li>
+    </ul>
+    <form action="/logout" method="post" style="margin-top:22px;">
+      <button class="primary" type="submit" style="width:auto; padding:9px 18px;">Log out</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

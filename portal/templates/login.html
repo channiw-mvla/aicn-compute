@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Log in — AICN{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="card">
+    <h1>Welcome back</h1>
+    <p class="sub">Log in to your AICN account.</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" value="{{ email }}" required autofocus autocomplete="email">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password">
+      <button class="primary" type="submit">Log in</button>
+    </form>
+    <div class="alt">New here? <a href="/register">Create an account</a></div>
+  </div>
+</div>
+{% endblock %}

@@ -15,15 +15,22 @@ tunnel: aicn-gateway
 credentials-file: /home/YOU/.cloudflared/TUNNEL-ID.json
 
 ingress:
-  # Public WebSocket endpoint for nodes + requesters. cloudflared handles the
-  # ws/wss upgrade automatically; the gateway speaks plain ws on localhost:8765.
+  # --- public READ-ONLY status dashboard at the apex (YOURDOMAIN.com) ---
+  # The dashboard page is on :8766 and its live WebSocket on :8765. Behind the
+  # tunnel both must ride one hostname, so the page's /ws path routes to the WS
+  # port and everything else to the dashboard HTTP. Public (non-LAN) viewers are
+  # read-only server-side — they can watch but not submit/cancel/control.
+  - hostname: YOURDOMAIN.com
+    path: /ws.*
+    service: http://localhost:8765
+  - hostname: YOURDOMAIN.com
+    service: http://localhost:8766
+
+  # --- node/requester connection endpoint ---
+  # cloudflared handles the ws/wss upgrade automatically; the gateway speaks
+  # plain ws on localhost:8765.
   - hostname: gateway.YOURDOMAIN.com
     service: http://localhost:8765
-
-  # NOTE: the dashboard (port 8766) is deliberately NOT exposed here. Keep it on
-  # the LAN / Tailscale only, so node CONTROLS never sit on a public URL. If you
-  # do want a read-only public dashboard, add another hostname -> http://localhost:8766
-  # and rely on --trusted-proxy keeping control LAN-only.
 
   # Catch-all: everything else gets a 404.
   - service: http_status:404

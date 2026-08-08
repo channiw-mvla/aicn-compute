@@ -331,6 +331,8 @@ def load_job(args):
             workload["pip"] = [p.strip() for p in args.pip.split(",") if p.strip()]
         if args.pip_timeout:
             workload["pip_timeout_sec"] = args.pip_timeout
+        if args.image:
+            workload["image"] = args.image
         return {
             "needs": {"cpu": 1, "ram_mb": args.ram_mb},
             "max_runtime_sec": args.max_runtime,
@@ -355,6 +357,8 @@ def main():
     ap.add_argument("--interpreter", default="python", choices=["python", "bash", "sh", "node"])
     ap.add_argument("--pip", help="comma-separated packages to install for this job, e.g. numpy,pandas")
     ap.add_argument("--pip-timeout", type=int, help="seconds allowed for the per-job pip install (default 600)")
+    ap.add_argument("--image", help="Docker image to run the job in (hardened/docker nodes only), "
+                    "e.g. tensorflow/tensorflow:latest — bake deps in instead of per-job pip")
     ap.add_argument("--ram-mb", type=int, default=128, dest="ram_mb")
     ap.add_argument("--max-runtime", type=int, default=60)
     ap.add_argument("--detach", action="store_true", help="submit and return a job id immediately")

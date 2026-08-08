@@ -457,11 +457,12 @@ class Gateway:
         if self.secure:
             if mtype == P.HELLO:
                 await self._secure_session(ws, first)
-            elif (mtype == P.REGISTER and first.get("role") == P.ROLE_DASHBOARD
-                  and self._control_allowed(ws)):
-                # the operator's LOCAL dashboard (LAN + loopback, same trusted
-                # boundary as node control) is allowed without keypair auth
-                await self._requester_session(ws, first, observe=True)
+            elif mtype == P.REGISTER and first.get("role") == P.ROLE_DASHBOARD:
+                # LAN dashboards get full access without keypair auth; public
+                # (non-LAN) dashboards are allowed too but READ-ONLY — a public
+                # status view that can watch the pool but not submit/cancel jobs.
+                await self._requester_session(ws, first, observe=True,
+                                              read_only=not self._control_allowed(ws))
             else:
                 await P.send(ws, {"type": P.UNAUTHORIZED,
                                   "reason": "secure mode: send HELLO to authenticate with your key"})
@@ -483,8 +484,10 @@ class Gateway:
         if role == P.ROLE_NODE:
             await self._node_session(ws, reg, identity=identity)
         elif role in (P.ROLE_REQUESTER, P.ROLE_DASHBOARD):
-            await self._requester_session(ws, reg, observe=(role == P.ROLE_DASHBOARD),
-                                          identity=identity)
+            observe = (role == P.ROLE_DASHBOARD)
+            # public (non-LAN) dashboards are read-only status views
+            await self._requester_session(ws, reg, observe=observe, identity=identity,
+                                          read_only=observe and not self._control_allowed(ws))
         else:
             await P.send(ws, {"type": P.JOB_FAILED, "reason": f"unknown role {role!r}"})
 
@@ -648,7 +651,7 @@ class Gateway:
             await self._requeue(job_id, node.id)
             await self.push()
 
-    async def _requester_session(self, ws, reg, observe=False, identity=None):
+    async def _requester_session(self, ws, reg, observe=False, identity=None, read_only=False):
         who = P.ROLE_DASHBOARD if observe else P.ROLE_REQUESTER
         req_id = (identity["label"] if identity else None) or \
             reg.get("requester_id") or (f"{who[:3]}-" + uuid.uuid4().hex[:8])
@@ -657,14 +660,23 @@ class Gateway:
             self.observers.add(ws)
             await P.send(ws, {"type": P.CONTROL_INFO,
                               "enabled": bool(self.admin_token),
-                              "local": self._control_allowed(ws)})
+                              "local": self._control_allowed(ws),
+                              "read_only": read_only})
             await P.send(ws, self.build_state())
-        self.log(f"{who} {req_id} connected", record=not observe)
+        ro = " (read-only)" if read_only else ""
+        self.log(f"{who} {req_id} connected{ro}", record=not observe)
         rep_key = (identity["fp"] if identity else req_id)
         try:
             async for raw in ws:
                 msg = P.decode(raw)
                 mtype = msg.get("type")
+                # A read-only (public) viewer may look but not act: no job submit,
+                # no cancel. Enforced HERE server-side — hiding the form in the
+                # browser is not a security boundary.
+                if read_only and mtype in (P.SUBMIT_JOB, P.CANCEL_JOB):
+                    await P.send(ws, {"type": P.JOB_FAILED, "job_id": msg.get("job_id"),
+                                      "reason": "read-only status view — submit jobs with the aicn CLI"})
+                    continue
                 if mtype == P.SUBMIT_JOB:
                     await self._handle_submit(ws, msg, who, req_id, rep_key)
                 elif mtype == P.GET_JOB:
@@ -995,10 +1007,11 @@ async def main():
             f"on the local network (LAN + loopback{extra}). Remote/overlay viewers are monitor-only.")
     else:
         log("node control DISABLED — dashboard is monitor-only (set --admin-token / AICN_ADMIN_TOKEN to enable).")
-    if public and not token:
-        log("WARNING: binding to a non-loopback address with NO token. The gateway "
+    if public and not token and not gw.secure:
+        log("WARNING: binding to a non-loopback address with NO auth. The gateway "
             "runs arbitrary submitted code in sandboxes on your nodes — do NOT expose "
-            "it beyond a trusted LAN. Set --token / AICN_TOKEN before widening reach.")
+            "it beyond a trusted LAN. Set --authorized-keys (keypair auth) or "
+            "--token / AICN_TOKEN before widening reach.")
     elif public and token:
         log("WARNING: token is sent in cleartext over ws:// (no TLS until Phase 3). "
             "It blocks casual/unauthenticated access but not a network sniffer — for "

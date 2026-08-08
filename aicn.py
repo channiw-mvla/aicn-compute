@@ -138,6 +138,8 @@ def _build_spec(args, cfg):
         workload["pip_index_url"] = args.pip_index
     if args.pip_timeout:
         workload["pip_timeout_sec"] = parse_time(args.pip_timeout)
+    if getattr(args, "image", None):
+        workload["image"] = args.image
     if args.in_files:
         files = workload.setdefault("files", {})
         for path in args.in_files:
@@ -264,6 +266,9 @@ def main():
         pr.add_argument("--pip", help="comma-separated packages, e.g. numpy,torch")
         pr.add_argument("--pip-index", dest="pip_index", help="custom pip index URL (ROCm/CUDA wheels)")
         pr.add_argument("--pip-timeout", dest="pip_timeout", help="install time budget, e.g. 30m")
+        pr.add_argument("--image", help="Docker image to run the job in, e.g. tensorflow/tensorflow:latest. "
+                        "Only used by hardened/docker nodes; bakes dependencies in instead of per-job pip "
+                        "(which the hardened sandbox can't do — it has no network).")
         pr.add_argument("--ram", help="RAM budget, e.g. 4g / 512m (default from config)")
         pr.add_argument("--timeout", help="max runtime, e.g. 15m / 2h (default from config)")
         pr.add_argument("--gpu", action="store_true", help="require a GPU node")

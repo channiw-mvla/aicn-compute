@@ -147,7 +147,7 @@
   </div>
 
   <div style="display:flex; flex-direction:column; gap:16px;">
-    <div class="card">
+    <div class="card" id="submitCard">
       <h2>Submit a job</h2>
       <div class="row">
         <div>
@@ -198,7 +198,16 @@ print("2 + 2 =", 2 + 2)</textarea>
 </div>
 
 <script>
-const WS_URL = `{{WS_SCHEME}}://${location.hostname}:{{WS_PORT}}`;
+function wsUrl() {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  // Direct access (e.g. :8766) -> the gateway's WS port on the same host.
+  // Behind a tunnel/proxy on a standard port -> same-origin /ws (the proxy routes it to the WS port).
+  if (location.port && location.port !== '443' && location.port !== '80') {
+    return `${scheme}://${location.hostname}:{{WS_PORT}}`;
+  }
+  return `${scheme}://${location.host}/ws`;
+}
+const WS_URL = wsUrl();
 const TOKEN = "{{TOKEN}}";  // injected by the gateway when a shared secret is set
 const $ = id => document.getElementById(id);
 let ws, connected = false;
@@ -208,6 +217,7 @@ let lastNodes = [];       // most recent node list (for re-render on selection)
 let serverControl = false;   // gateway has an admin token
 let amLocal = false;         // this viewer is on the gateway's local network
 let controlEnabled = false;  // = serverControl && amLocal (both required to control)
+let readOnly = false;        // public viewer: may watch but not submit or cancel jobs
 
 function setConn(state, text) {
   const el = $("conn");
@@ -241,8 +251,8 @@ function handle(msg) {
   switch (msg.type) {
     case "UNAUTHORIZED": setConn("down", "unauthorized — bad token"); $("submit").disabled = true; break;
     case "CONTROL_INFO":
-      serverControl = !!msg.enabled; amLocal = !!msg.local; recomputeControl();
-      renderNodes(lastNodes); break;
+      serverControl = !!msg.enabled; amLocal = !!msg.local; readOnly = !!msg.read_only;
+      recomputeControl(); applyReadOnly(); renderNodes(lastNodes); break;
     case "STATE":
       serverControl = !!msg.control_enabled; recomputeControl();
       renderNodes(msg.nodes); renderEvents(msg.events); renderStats(msg); break;
@@ -364,6 +374,11 @@ function schedText(sched) {
 
 // -- admin node control --
 function recomputeControl() { controlEnabled = serverControl && amLocal; updateAdminUI(); }
+function applyReadOnly() {
+  const card = $("submitCard");
+  if (card) card.style.display = readOnly ? "none" : "";
+  document.title = readOnly ? "AICN · Status" : "AICN · Compute Pool";
+}
 function updateAdminUI() { $("admin").style.display = controlEnabled ? "flex" : "none"; }
 function adminToken() { const el = $("adminToken"); return el ? el.value.trim() : ""; }
 function sendControl(id, action, extra) {
@@ -546,7 +561,7 @@ function renderJobs(list) {
     const acts = tr.lastElementChild;
     const view = document.createElement("button"); view.className = "act"; view.textContent = "view";
     view.onclick = () => getJob(j.job_id); acts.appendChild(view);
-    if (active) {
+    if (active && !readOnly) {
       const c = document.createElement("button"); c.className = "act"; c.textContent = "cancel";
       c.onclick = () => cancelJob(j.job_id); acts.appendChild(c);
     }

@@ -1,0 +1,22 @@
+[Unit]
+# AICN Cloudflare tunnel — runs on the GATEWAY box, exposes the gateway's ws port.
+#
+# NOTE: this runs the QUICK tunnel, whose URL CHANGES on every restart. Under
+# systemd that means the public URL rotates on reboot — fine for testing, but for
+# a lasting network use a NAMED tunnel instead: set up ~/.cloudflared/config.yml
+# (see cloudflared-config.yml.template) and run `sudo cloudflared service install`,
+# which installs its own persistent service with a stable domain. Then you don't
+# need this unit.
+Description=AICN Cloudflare quick tunnel
+After=network-online.target aicn-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wchanning
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:8765
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

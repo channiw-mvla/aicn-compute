@@ -478,6 +478,40 @@ class _PanelHTTP(http.server.BaseHTTPRequestHandler):
         pass  # keep the node console clean
 
 
+def _parse_size_mb(s):
+    """'24g' / '512m' / '8192' -> MB (int), or None if unparseable. Bare = MB."""
+    if s is None:
+        return None
+    s = str(s).strip().lower()
+    try:
+        if s.endswith("g"):
+            return int(float(s[:-1]) * 1024)
+        if s.endswith("m"):
+            return int(float(s[:-1]))
+        if s.endswith("k"):
+            return max(1, int(float(s[:-1]) / 1024))
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def _parse_time_sec(s):
+    """'1h' / '30m' / '3600' -> seconds (int), or None. Bare = seconds."""
+    if s is None:
+        return None
+    s = str(s).strip().lower()
+    try:
+        if s.endswith("h"):
+            return int(float(s[:-1]) * 3600)
+        if s.endswith("m"):
+            return int(float(s[:-1]) * 60)
+        if s.endswith("s"):
+            return int(float(s[:-1]))
+        return int(float(s))
+    except ValueError:
+        return None
+
+
 def load_config(path):
     config = dict(DEFAULT_CONFIG)
     if path and os.path.exists(path):
@@ -510,6 +544,10 @@ async def main():
                     "use 0.0.0.0 to reach it from the LAN — then also set --panel-token)")
     ap.add_argument("--panel-token", help="require this token to view/control the local panel")
     ap.add_argument("--no-panel", action="store_true", help="do not host the local admin panel")
+    ap.add_argument("--max-job-ram", help="biggest RAM a single job may request, e.g. 24g / 8192 "
+                    "(default 4g). Jobs asking for more are refused by this node.")
+    ap.add_argument("--max-job-runtime", help="longest runtime a single job may request, e.g. 1h / 3600 "
+                    "(default 600s).")
     args = ap.parse_args()
 
     config = load_config(args.config)
@@ -528,6 +566,17 @@ async def main():
         config["tls_ca"] = args.tls_ca
     if args.insecure:
         config["insecure"] = True
+
+    mj = dict(config.get("max_job") or {})
+    if args.max_job_ram:
+        v = _parse_size_mb(args.max_job_ram)
+        if v:
+            mj["ram_mb"] = v
+    if args.max_job_runtime:
+        v = _parse_time_sec(args.max_job_runtime)
+        if v:
+            mj["runtime_sec"] = v
+    config["max_job"] = mj
 
     panel = dict(config.get("panel") or {})
     if args.no_panel:

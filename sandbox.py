@@ -465,6 +465,39 @@ def docker_available() -> bool:
         return False
 
 
+def _make_world_readable(path):
+    """Make a tree traversable + readable by the container's non-root user (dirs
+    0755, files 0644). The job dir is mounted read-only, so read/traverse is all
+    that's needed — without this, mkdtemp's 0700 blocks the 'nobody' user and the
+    container fails with 'Permission denied' opening the script."""
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+    for root, dirs, files in os.walk(path):
+        for d in dirs:
+            try:
+                os.chmod(os.path.join(root, d), 0o755)
+            except OSError:
+                pass
+        for f in files:
+            try:
+                os.chmod(os.path.join(root, f), 0o644)
+            except OSError:
+                pass
+
+
+def _host_gid(name):
+    """Numeric group id for a group name on the host, or None. Used to grant the
+    container process the video/render groups for GPU device access (grp is
+    POSIX-only; returns None where unavailable, e.g. Windows)."""
+    try:
+        import grp
+        return grp.getgrnam(name).gr_gid
+    except Exception:
+        return None
+
+
 class DockerSandbox(_BaseSandbox):
     """Hardened isolation via `docker run` — the backend for running untrusted,
     stranger-supplied code (Phase 3).
@@ -484,6 +517,21 @@ class DockerSandbox(_BaseSandbox):
         self._container = None
         self.runtime = runtime      # e.g. "runsc" (gVisor) or "kata-runtime"
         self.hardened = hardened
+
+    def _gpu_flags(self):
+        """Docker flags to expose the host GPU inside the otherwise locked-down
+        container. AMD ROCm needs the kfd + dri devices plus membership in the
+        host's video and render groups (passed as numeric GIDs so they don't
+        depend on those group names existing inside the image). NVIDIA uses the
+        container toolkit's --gpus."""
+        if os.path.exists("/dev/kfd"):        # AMD ROCm
+            flags = ["--device", "/dev/kfd", "--device", "/dev/dri"]
+            for gname in ("video", "render"):
+                gid = _host_gid(gname)
+                if gid is not None:
+                    flags += ["--group-add", str(gid)]
+            return flags
+        return ["--gpus", "all"]              # NVIDIA (needs nvidia-container-toolkit)
 
     def build_cmd(self, name, workdir, script_name, interpreter, needs, image,
                   outdir=None, ckptdir=None, env=None):
@@ -520,11 +568,7 @@ class DockerSandbox(_BaseSandbox):
         if cpu:
             cmd += ["--cpus", str(cpu)]
         if needs.get("gpu"):
-            # GPU passthrough necessarily relaxes isolation somewhat.
-            if os.path.exists("/dev/kfd"):
-                cmd += ["--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video"]
-            else:
-                cmd += ["--gpus", "all"]
+            cmd += self._gpu_flags()   # GPU passthrough necessarily relaxes isolation somewhat
         cmd += [image]
         cmd += _container_interpreter_cmd(interpreter, "/job/" + script_name)
         return cmd
@@ -559,6 +603,7 @@ class DockerSandbox(_BaseSandbox):
         try:
             script_name = os.path.basename(self._write_script(workdir, workload))
             self._write_inputs(workdir, workload.get("files"))
+            _make_world_readable(workdir)   # let the container's 'nobody' user read /job
             image = workload.get("image") or self.IMAGES.get(interpreter, "debian:stable-slim")
             cmd = self.build_cmd(name, workdir, script_name, interpreter, needs, image,
                                  outdir, ckptdir, workload.get("env"))

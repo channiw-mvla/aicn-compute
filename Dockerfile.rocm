@@ -1,0 +1,55 @@
+# Dockerfile.rocm — AICN GPU worker image for AMD RDNA4 (Radeon AI PRO R9700 / gfx1201).
+#
+# Bakes in a torch build that supports gfx1201 (ROCm 6.4 nightly — the exact combo
+# confirmed working on the host: torch 2.10.0.dev + rocm6.4). Hardened GPU jobs then
+# need NO per-job pip (the hardened sandbox has no network) — dependencies are in the image.
+#
+# BUILD (on the AMD node, or anywhere then push to a registry the node can pull):
+#     docker build -f Dockerfile.rocm -t aicn-rocm:latest .
+#
+# USE:
+#     aicn run train.py --image aicn-rocm:latest --gpu --ram 8g --out ./results --target gpuserver-136
+#
+# The hardened sandbox passes /dev/kfd + /dev/dri and the video/render groups through
+# automatically for --gpu jobs; everything else stays locked down.
+#
+# TAG NOTE: pick a base tag that matches your host ROCm. Yours is 6.4.4, so a 6.4.x
+# image is right. Check https://hub.docker.com/r/rocm/dev-ubuntu-24.04/tags and adjust
+# the tag below if this one 404s.
+FROM rocm/dev-ubuntu-24.04:6.4-complete
+
+# The sandbox invokes `python` (not `python3`), and Ubuntu 24.04's system Python is
+# "externally managed" — so provide a `python` symlink and allow the install.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pip \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# torch nightly for ROCm 6.4 — includes the gfx1201 (RDNA4) kernels.
+# (Switch to the stable index once a stable rocm6.4 torch supports gfx1201.)
+RUN python -m pip install --no-cache-dir --break-system-packages --pre torch \
+      --index-url https://download.pytorch.org/whl/nightly/rocm6.4
+
+# numpy (and any other common deps) from the default index — the torch install
+# above used the ROCm index, which only carries torch. Add more packages here as
+# your jobs need them.
+RUN python -m pip install --no-cache-dir --break-system-packages numpy
+
+# The container runs read-only, as an unprivileged user, with only /tmp writable.
+# Point HOME and the ROCm/MIOpen caches at /tmp so kernels can be JIT-cached.
+ENV HOME=/tmp \
+    MIOPEN_USER_DB_PATH=/tmp/miopen \
+    MIOPEN_CUSTOM_CACHE_DIR=/tmp/miopen \
+    PYTHONUNBUFFERED=1
+
+# Fail the build early if torch or the interpreter isn't wired up right.
+RUN python -c "import torch; print('torch', torch.__version__, '| hip', torch.version.hip)"
+
+# ---------------------------------------------------------------------------
+# SMALLER ALTERNATIVE (optional): the rocm/dev '-complete' base is ~30 GB. Because
+# the torch ROCm wheel bundles its own userspace ROCm libraries, a slim base often
+# works too (kernel access comes from the passed-through /dev/kfd). If image size
+# matters, try replacing the FROM line above with:
+#     FROM ubuntu:24.04
+# keep the same apt + pip steps, and test one GPU job before relying on it.
+# ---------------------------------------------------------------------------
