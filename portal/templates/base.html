@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}AICN{% endblock %}</title>
+{% block head %}{% endblock %}
 <style>
   :root {
     --bg:#0f1419; --panel:#1a2029; --panel2:#232b36; --line:#2e3a48;
@@ -54,7 +55,9 @@
   <div class="spacer"></div>
   <nav>
     {% if request and request.cookies.get('aicn_session') %}
-      <a href="/dashboard">Dashboard</a>
+      <a href="/dashboard">Organizations</a>
+      <a href="/servers">Servers</a>
+      <a href="/tokens">API tokens</a>
       <form action="/logout" method="post" style="display:inline; margin-left:16px;">
         <button class="link" type="submit">Log out</button>
       </form>

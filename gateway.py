@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 import websockets
 
 import identity as ID
+import portal_link as PL
 import protocol as P
 import tlsutil
 from reputation import RateLimiter, ReputationStore
@@ -62,6 +63,7 @@ class Node:
         self.stats = {}               # latest live utilization (CPU/RAM/GPU) from the node
         self.paused = False           # admin pause (reversible); stops new job assignment
         self.schedule = []            # node's recurring availability windows (for the dashboard)
+        self.org_ids = set()          # portal orgs this server is shared into (empty = flat pool)
 
     @property
     def reliability(self):
@@ -80,6 +82,7 @@ class Job:
         self.node_id = None
         self.tried = set()            # node ids already attempted
         self.requester_key = None     # reputation/abuse key of the submitter
+        self.org_id = None            # portal org this job is scoped to (None = flat pool)
         self.batch_id = None          # groups tasks of a batch/array submission
         self.status = P.ST_QUEUED     # queued -> running -> done/failed/cancelled
         self.result = None            # stored JOB_RESULT payload (survives disconnect)
@@ -128,6 +131,7 @@ class Gateway:
         self.queue = deque()          # job_ids waiting for a free node
         self.done_order = deque()     # completion order, for bounding the store
         self.done_cap = 500           # keep at most this many finished jobs
+        self.web_map = {}             # gateway job_id -> portal web_jobs.id (browser submissions)
 
     # -- logging + live state ------------------------------------------------
     def log(self, msg, record=True):
@@ -171,6 +175,10 @@ class Gateway:
 
     # -- matching (section 07) ----------------------------------------------
     def _fits(self, node: Node, job: Job) -> bool:
+        # Org-scoped routing: a job bound to an org only runs on servers shared
+        # into that org. Jobs with no org (job.org_id is None) use the flat pool.
+        if job.org_id is not None and job.org_id not in node.org_ids:
+            return False
         need = job.needs
         hw = node.hardware
         mj = node.max_job
@@ -573,6 +581,15 @@ class Gateway:
         node.paused = bool(reg.get("paused"))
         if identity:
             node.rep_key = identity["fp"]
+            fp = identity["fp"]
+            # Portal link: claim the server to its owner (one-time), then learn
+            # which orgs it's shared into so jobs can route to it.
+            if PL.enabled():
+                if reg.get("claim_token"):
+                    if PL.claim_server(reg["claim_token"], fp):
+                        self.log(f"node {node_id} claimed to a portal account ({fp})")
+                node.org_ids = PL.org_ids_for_fingerprint(fp)
+                PL.touch_server(fp)
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
         node.ok, node.fail = seed["ok"], seed["fail"] + seed["evict"]
         self.nodes[node_id] = node
@@ -606,6 +623,8 @@ class Gateway:
                 await self._drain_queue()   # newly-available node can take waiting jobs
         elif mtype == P.NODE_STATS:
             node.stats = msg.get("stats", {}) or {}
+            if PL.enabled() and node.identity:
+                PL.touch_server(node.rep_key)   # keep last_seen fresh for the portal
             await self.push()               # live utilization to the dashboards
         elif mtype == P.JOB_RESULT:
             job_id = msg.get("job_id")
@@ -701,6 +720,45 @@ class Gateway:
                 if job.requester_ws is ws:
                     job.requester_ws = None
 
+    # -- web-job queue (browser submissions via the shared portal DB) --------
+    async def _web_poll_loop(self):
+        while True:
+            try:
+                await self._web_poll_tick()
+            except Exception as e:
+                self.log(f"web-poll error: {e}", record=False)
+            await asyncio.sleep(2)
+
+    async def _web_poll_tick(self):
+        # 1. pick up new browser-submitted jobs
+        for wj in PL.fetch_pending_web_jobs():
+            job_id = "web-" + uuid.uuid4().hex[:8]
+            workload = {"interpreter": wj["interpreter"], "script": wj["script"], "input": ""}
+            if wj.get("pip"):
+                workload["pip"] = [p.strip() for p in wj["pip"].split(",") if p.strip()]
+            job = Job(job_id, None,
+                      needs={"cpu": 1, "ram_mb": wj["ram_mb"]},
+                      max_runtime=wj["max_runtime"], workload=workload)
+            job.org_id = wj["org_id"]
+            job.requester_key = f"web:{wj['user_id']}"
+            self.jobs[job_id] = job
+            self.web_map[job_id] = wj["id"]
+            PL.mark_web_job(wj["id"], "queued", gateway_job_id=job_id)
+            self.log(f"web job {wj['id']} accepted as {job_id} (org {wj['org_id']})")
+            await self.submit(job)
+        # 2. sync tracked jobs' progress/results back to the portal DB
+        for gwid, web_id in list(self.web_map.items()):
+            job = self.jobs.get(gwid)
+            if job is None:
+                PL.finish_web_job(web_id, "failed", None, {"status": "failed", "stderr": "job was dropped"})
+                self.web_map.pop(gwid, None)
+                continue
+            if job.status in (P.ST_DONE, P.ST_FAILED, P.ST_CANCELLED):
+                PL.finish_web_job(web_id, job.status, job.node_id, job.result or {})
+                self.web_map.pop(gwid, None)
+            else:
+                PL.mark_web_job(web_id, job.status, node_id=job.node_id)
+
     async def _handle_submit(self, ws, msg, who, req_id, rep_key):
         job_id = msg.get("job_id") or ("job-" + uuid.uuid4().hex[:8])
         if not self.rate_limiter.allow(rep_key):
@@ -708,12 +766,33 @@ class Gateway:
                               "reason": "rate limit exceeded — too many jobs; slow down"})
             self.log(f"{who} {req_id} rate-limited")
             return
+
+        # Org-scoped submission: authenticate the submitter by API token and
+        # confirm org membership, so the job routes only to that org's servers.
+        org_slug = msg.get("org")
+        org_id = None
+        if org_slug:
+            def refuse(reason):
+                return P.send(ws, {"type": P.JOB_FAILED, "job_id": job_id, "reason": reason})
+            if not PL.enabled():
+                await refuse("this gateway isn't linked to the portal (org routing unavailable)")
+                return
+            who_user = PL.user_for_api_token(msg.get("api_token"))
+            if who_user is None:
+                await refuse("invalid or missing --api-token for an --org submission")
+                return
+            org_id = PL.org_id_for_slug(org_slug)
+            if org_id is None or not PL.user_in_org(who_user[0], org_id):
+                await refuse(f"you are not a member of organization '{org_slug}'")
+                return
+
         job = Job(job_id, ws,
                   needs=msg.get("needs", {}),
                   max_runtime=msg.get("max_runtime_sec", 60),
                   workload=msg.get("workload", {}),
                   target_node=msg.get("target_node"))
         job.requester_key = rep_key
+        job.org_id = org_id
         job.batch_id = msg.get("batch_id")
         self.jobs[job_id] = job
         self.reputation.record(rep_key, "submitted")
@@ -1030,9 +1109,13 @@ async def main():
             log("note: the dashboard page embeds the token, so keep the dashboard "
                 "HTTP port private (localhost/LAN), not public.")
 
+    if PL.enabled():
+        log(f"PORTAL LINK ENABLED — org sharing + browser-submitted jobs via {PL.PORTAL_DB}")
     log(f"listening on {ws_scheme}://{args.host}:{args.port}  ({P.PROTOCOL})")
     async with websockets.serve(gw.handle, args.host, args.port, ssl=ssl_ctx,
                                 ping_interval=20, max_size=P.MAX_MSG):
+        if PL.enabled():
+            asyncio.create_task(gw._web_poll_loop())   # run browser-submitted jobs
         await asyncio.Future()  # run forever
 
 

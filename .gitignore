@@ -1,3 +1,7 @@
+# NOTE: git treats "#" as a comment only at the START of a line. Never put a
+# comment after a pattern on the same line — it becomes part of the pattern and
+# silently stops matching. Keep every comment on its own line.
+
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -12,18 +16,31 @@ venv/
 env/
 
 # --- AICN secrets & runtime state (NEVER commit these) ---
-*.key                    # Ed25519 private identity keys (e.g. identity.key)
-authorized_keys.json     # approved-keys store (fingerprints/pubkeys)
-reputation.json          # per-identity reputation data
-cert.pem                 # TLS certificate
-key.pem                  # TLS private key
-*.log                    # gateway.log / agent.log
-.aicn/                   # local CLI config, if kept in-tree
+# Ed25519 private identity keys (e.g. identity.key)
+*.key
+# approved-keys store (fingerprints/pubkeys)
+authorized_keys.json
+# per-identity reputation data
+reputation.json
+# TLS certificate + private key
+cert.pem
+key.pem
+# gateway.log / agent.log
+*.log
+# local CLI config / identity, if kept in-tree
+.aicn/
 
 # --- Local per-node deploy configs (may contain tokens) ---
-# The format is documented in the README; ship node.config.nightly.json as a sample.
 node.config.136.json
 node.config.139.json
+
+# --- Portal (web app) runtime data (NEVER commit — holds user accounts) ---
+# SQLite databases (portal/portal.db: users, sessions, orgs, jobs) + side-files
+*.db
+*.db-wal
+*.db-shm
+# systemd EnvironmentFile (admin token, paths)
+aicn.env
 
 # --- OS / editor cruft ---
 .DS_Store

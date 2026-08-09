@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}{{ org["name"] }} — AICN{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:720px;">
+
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+    <a href="/dashboard" class="muted" style="text-decoration:none;">← Organizations</a>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <h1 style="margin:0;">{{ org["name"] }}</h1>
+      <span style="font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:3px 9px;
+            border-radius:10px; background:{{ 'rgba(74,168,255,.15)' if role=='admin' else '#30363d' }};
+            color:{{ 'var(--accent)' if role=='admin' else 'var(--muted)' }};">You: {{ role }}</span>
+    </div>
+    <p class="sub" style="margin-top:6px;">/{{ org["slug"] }}</p>
+
+    <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:22px 0 10px;">
+      Members ({{ members|length }})</h2>
+    <div style="display:grid; gap:8px;">
+      {% for mem in members %}
+        <div style="display:flex; align-items:center; gap:10px; padding:11px 14px;
+                    background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+          <div>
+            <div style="font-weight:600;">{{ mem["email"] }}{% if mem["user_id"] == user["id"] %}
+              <span class="muted" style="font-weight:400;">(you)</span>{% endif %}</div>
+          </div>
+          <span style="margin-left:auto; font-size:11px; text-transform:uppercase; letter-spacing:.5px;
+                padding:2px 8px; border-radius:10px;
+                background:{{ 'rgba(74,168,255,.15)' if mem['role']=='admin' else '#30363d' }};
+                color:{{ 'var(--accent)' if mem['role']=='admin' else 'var(--muted)' }};">{{ mem["role"] }}</span>
+          {% if is_admin %}
+            {% set is_last_admin = (mem["role"] == "admin" and admin_count <= 1) %}
+            {% if not is_last_admin %}
+              {% if mem["role"] == "member" %}
+                <form method="post" action="/orgs/{{ org['slug'] }}/members/{{ mem['user_id'] }}/role" style="display:inline;">
+                  <input type="hidden" name="role" value="admin">
+                  <button class="rowbtn" type="submit">Make admin</button>
+                </form>
+              {% else %}
+                <form method="post" action="/orgs/{{ org['slug'] }}/members/{{ mem['user_id'] }}/role" style="display:inline;">
+                  <input type="hidden" name="role" value="member">
+                  <button class="rowbtn" type="submit">Make member</button>
+                </form>
+              {% endif %}
+              <form method="post" action="/orgs/{{ org['slug'] }}/members/{{ mem['user_id'] }}/remove" style="display:inline;"
+                    onsubmit="return confirm('Remove this member from the organization?');">
+                <button class="rowbtn danger" type="submit">Remove</button>
+              </form>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
+      Shared servers ({{ servers|length }})</h2>
+    {% if servers %}
+      <div style="display:grid; gap:8px;">
+        {% for s in servers %}
+          <div style="display:flex; align-items:center; gap:10px; padding:11px 14px;
+                      background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+            <span class="sdot {{ 'on' if s['id'] in online else 'off' }}"></span>
+            <div>
+              <div style="font-weight:600;">{{ s["name"] }}</div>
+              <div class="muted" style="font-size:12px;">shared by {{ s["owner_email"] }}</div>
+            </div>
+            <span style="margin-left:auto; font-size:11px; text-transform:uppercase; letter-spacing:.5px;
+                  color:{{ 'var(--ok)' if s['id'] in online else 'var(--muted)' }};">
+              {{ "online" if s["id"] in online else ("claimed" if s["fingerprint"] else "not set up") }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted" style="margin:0;">No servers shared into this org yet. Members can share their
+        servers from the <a href="/servers">Servers</a> page.</p>
+    {% endif %}
+
+    <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
+      Run a job</h2>
+    {% if any_online %}
+      <form method="post" action="/orgs/{{ org['slug'] }}/submit">
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+          <div><label class="lb">Interpreter</label>
+            <select name="interpreter" class="fld">
+              <option value="python">python</option><option value="bash">bash</option>
+              <option value="sh">sh</option><option value="node">node</option>
+            </select></div>
+          <div><label class="lb">RAM (MB)</label><input class="fld" name="ram_mb" type="number" value="512" min="1"></div>
+          <div><label class="lb">Max runtime (s)</label><input class="fld" name="max_runtime" type="number" value="60" min="1"></div>
+        </div>
+        <label class="lb">Packages (pip, optional)</label>
+        <input class="fld" name="pip" type="text" placeholder="e.g. numpy, pandas">
+        <label class="lb">Script</label>
+        <textarea class="fld" name="script" required rows="6" style="font-family:ui-monospace,Consolas,monospace;">import platform
+print("hello from", platform.node())</textarea>
+        <button class="btn solid" type="submit" style="margin-top:12px;">Run on {{ org["name"] }}</button>
+      </form>
+    {% else %}
+      <p class="muted" style="margin:0;">No servers are online in this org right now — jobs will queue until one connects.
+        You can still submit below.</p>
+      <form method="post" action="/orgs/{{ org['slug'] }}/submit" style="margin-top:10px;">
+        <textarea class="fld" name="script" required rows="4" placeholder="Your script…"
+          style="font-family:ui-monospace,Consolas,monospace;"></textarea>
+        <input type="hidden" name="ram_mb" value="512"><input type="hidden" name="max_runtime" value="60">
+        <button class="btn solid" type="submit" style="margin-top:10px;">Submit</button>
+      </form>
+    {% endif %}
+
+    <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
+      Recent jobs</h2>
+    {% if jobs %}
+      <div style="display:grid; gap:6px;">
+        {% for j in jobs %}
+          <a href="/jobs/{{ j['id'] }}" style="text-decoration:none; color:inherit;">
+            <div style="display:flex; align-items:center; gap:10px; padding:10px 14px;
+                        background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+              <span class="jst {{ j['status'] }}">{{ j["status"] }}</span>
+              <div style="min-width:0;">
+                <div style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  #{{ j["id"] }} · {{ j["script"].split("\n")[0][:48] }}</div>
+                <div class="muted" style="font-size:12px;">by {{ j["user_email"] }}{% if j["node_id"] %} · {{ j["node_id"] }}{% endif %}</div>
+              </div>
+              <span style="margin-left:auto; color:var(--muted); font-size:16px;">›</span>
+            </div>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted" style="margin:0;">No jobs yet.</p>
+    {% endif %}
+
+    {% if is_admin %}
+      <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
+        Invite links</h2>
+      <p class="muted" style="margin:0 0 12px;">Anyone who opens a link joins this org (they'll sign in first).</p>
+      <form method="post" action="/orgs/{{ org['slug'] }}/invite" style="display:flex; gap:8px; align-items:center;">
+        <select name="role" style="width:auto; padding:8px 10px; color:var(--text); background:var(--panel2);
+                border:1px solid var(--line); border-radius:8px;">
+          <option value="member">as member</option>
+          <option value="admin">as admin</option>
+        </select>
+        <button class="rowbtn" type="submit" style="padding:8px 14px;">Create invite link</button>
+      </form>
+      {% for inv in invites %}
+        <div style="display:flex; align-items:center; gap:10px; margin-top:10px; padding:10px 12px;
+                    background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+          <input readonly value="{{ invite_base }}{{ inv['token'] }}" onclick="this.select()"
+                 style="flex:1; font-size:12px; font-family:ui-monospace,Consolas,monospace;">
+          <span class="muted" style="font-size:11px; text-transform:uppercase;">{{ inv["role"] }}</span>
+          <form method="post" action="/orgs/{{ org['slug'] }}/invite/{{ inv['token'] }}/revoke" style="display:inline;">
+            <button class="rowbtn danger" type="submit">Revoke</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% endif %}
+
+    <div style="margin-top:26px; border-top:1px solid var(--line); padding-top:16px;">
+      {% if role == "admin" and admin_count <= 1 %}
+        <p class="muted" style="margin:0;">You're the only admin — promote another member before you can leave.</p>
+      {% else %}
+        <form method="post" action="/orgs/{{ org['slug'] }}/leave"
+              onsubmit="return confirm('Leave this organization?');">
+          <button class="rowbtn danger" type="submit">Leave organization</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<style>
+  .rowbtn { font: inherit; font-size: 12px; padding: 5px 11px; background: var(--panel);
+    border: 1px solid var(--line); color: var(--text); border-radius: 7px; cursor: pointer; }
+  .rowbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .rowbtn.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .sdot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .sdot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .sdot.off { background:var(--muted); }
+  .lb { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  .fld { width:100%; padding:9px 11px; font:inherit; color:var(--text); background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; }
+  textarea.fld { resize:vertical; font-size:13px; }
+  .jst { font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:3px 9px; border-radius:10px; flex:none;
+    background:#30363d; color:var(--muted); }
+  .jst.running, .jst.queued { background:rgba(74,168,255,.15); color:var(--accent); }
+  .jst.done { background:rgba(63,185,80,.15); color:var(--ok); }
+  .jst.failed { background:rgba(248,81,73,.15); color:var(--bad); }
+  .jst.pending { background:rgba(210,153,34,.15); color:#d29922; }
+</style>
+{% endblock %}

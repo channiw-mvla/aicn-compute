@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} — AICN{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="card" style="text-align:center;">
+    <h1>{{ heading }}</h1>
+    <p class="sub">{{ text }}</p>
+    <a class="btn solid" href="/dashboard" style="display:inline-block; margin-top:8px;">Go to dashboard</a>
+  </div>
+</div>
+{% endblock %}

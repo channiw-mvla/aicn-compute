@@ -12,13 +12,26 @@ nano ~/aicn/aicn.env          # set the admin token, gateway URL, node id
 chmod 600 ~/aicn/aicn.env     # it holds the admin token
 ```
 
-## 2. Gateway box — gateway + tunnel
+## 2. Gateway box — gateway + portal + tunnel
 
+The gateway and portal run on the same box and share `portal.db`. Set up the
+portal's venv once:
 ```bash
-sudo cp systemd/aicn-gateway.service systemd/aicn-tunnel.service /etc/systemd/system/
+cd ~/aicn/portal
+python3 -m venv venv && venv/bin/pip install -r requirements.txt
+```
+Then install the services:
+```bash
+sudo cp systemd/aicn-gateway.service systemd/aicn-portal.service systemd/aicn-tunnel.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now aicn-gateway
-sudo systemctl enable --now aicn-tunnel      # quick tunnel; see note below
+sudo systemctl enable --now aicn-gateway     # reads AICN_PORTAL_DB from aicn.env -> org routing on
+sudo systemctl enable --now aicn-portal      # the web app on localhost:8000
+sudo systemctl enable --now aicn-tunnel      # quick tunnel; see note below (use a NAMED tunnel for a stable URL)
+```
+With a **named tunnel** (recommended), the portal is served at `app.YOURDOMAIN.com`
+— add that hostname to `~/.cloudflared/config.yml` and route its DNS:
+```bash
+cloudflared tunnel route dns aicn-gateway app.YOURDOMAIN.com
 ```
 
 Get the current quick-tunnel URL from its log (it rotates on restart):

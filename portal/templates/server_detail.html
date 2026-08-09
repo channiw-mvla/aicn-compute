@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ srv["name"] }} — AICN{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:680px;">
+  <div style="margin-bottom:6px;"><a href="/servers" class="muted" style="text-decoration:none;">← Servers</a></div>
+
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <h1 style="margin:0;">{{ srv["name"] }}</h1>
+      {% if srv["fingerprint"] %}
+        <span class="tag ok">claimed</span>
+      {% else %}
+        <span class="tag warn">awaiting setup</span>
+      {% endif %}
+    </div>
+
+    {% if claim_cmd %}
+      <h2 class="sec">Connect this server</h2>
+      <p class="muted" style="margin:0 0 10px;">Run this on the machine you want to add. It links the
+        agent to your account (the token is one-time).</p>
+      <pre onclick="var r=document.createRange();r.selectNode(this);getSelection().removeAllRanges();getSelection().addRange(r);">{{ claim_cmd }}</pre>
+      <p class="muted" style="font-size:12px; margin-top:8px;">Need the agent? <code>pipx install git+https://github.com/channiw-mvla/aicn-compute</code></p>
+    {% else %}
+      <h2 class="sec">Status</h2>
+      <div class="kv"><span class="k">Identity</span><span class="mono">{{ srv["fingerprint"] }}</span></div>
+      <div class="kv"><span class="k">Claimed</span><span>{{ srv["claimed_at"] or "—" }}</span></div>
+      <div class="kv"><span class="k">Last seen</span><span>{{ srv["last_seen"] or "never" }}</span></div>
+    {% endif %}
+
+    <h2 class="sec">Share with organizations</h2>
+    {% if orgs %}
+      <p class="muted" style="margin:0 0 10px;">Members of a checked org can run jobs on this server.</p>
+      <div style="display:grid; gap:8px;">
+        {% for o in orgs %}
+          <div style="display:flex; align-items:center; gap:10px; padding:10px 14px;
+                      background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+            <div>
+              <div style="font-weight:600;">{{ o["name"] }}</div>
+              <div class="muted" style="font-size:12px;">You: {{ o["role"] }}</div>
+            </div>
+            <div style="margin-left:auto;">
+              {% if o["id"] in shared %}
+                <form method="post" action="/servers/{{ srv['id'] }}/unshare" style="display:inline;">
+                  <input type="hidden" name="org_id" value="{{ o['id'] }}">
+                  <button class="tag ok" style="border:none; cursor:pointer;" type="submit">✓ shared — unshare</button>
+                </form>
+              {% else %}
+                <form method="post" action="/servers/{{ srv['id'] }}/share" style="display:inline;">
+                  <input type="hidden" name="org_id" value="{{ o['id'] }}">
+                  <button class="rowbtn" type="submit">Share</button>
+                </form>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">You're not in any organizations yet. <a href="/orgs/new">Create one</a> to share this server.</p>
+    {% endif %}
+
+    <h2 class="sec">Settings</h2>
+    <form method="post" action="/servers/{{ srv['id'] }}/rename" style="display:flex; gap:8px; align-items:center;">
+      <input name="name" type="text" value="{{ srv['name'] }}" maxlength="80" style="flex:1;">
+      <button class="rowbtn" type="submit">Rename</button>
+    </form>
+    <form method="post" action="/servers/{{ srv['id'] }}/remove" style="margin-top:12px;"
+          onsubmit="return confirm('Remove this server? It will stop being shared.');">
+      <button class="rowbtn danger" type="submit">Remove server</button>
+    </form>
+  </div>
+</div>
+<style>
+  .sec { font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:24px 0 10px; }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto;
+    font-size:13px; color:var(--text); white-space:pre-wrap; word-break:break-all; cursor:text; }
+  code { background:#0d1117; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .kv { display:flex; gap:12px; padding:6px 0; font-size:14px; border-bottom:1px solid var(--line); }
+  .kv .k { color:var(--muted); width:90px; }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+  .tag { font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:3px 9px; border-radius:10px; }
+  .tag.ok { background:rgba(63,185,80,.15); color:var(--ok); }
+  .tag.warn { background:rgba(210,153,34,.15); color:#d29922; }
+  .rowbtn { font:inherit; font-size:13px; padding:8px 14px; background:var(--panel); border:1px solid var(--line);
+    color:var(--text); border-radius:8px; cursor:pointer; }
+  .rowbtn:hover { border-color:var(--accent); color:var(--accent); }
+  .rowbtn.danger:hover { border-color:var(--bad); color:var(--bad); }
+</style>
+{% endblock %}

@@ -33,6 +33,7 @@ DEFAULTS = {
     "token": None, "secure": False, "identity_key": None,
     "tls_ca": None, "insecure": False,
     "ram": "1g", "timeout": "5m",
+    "api_token": None,                      # portal token for --org submissions
 }
 
 
@@ -152,6 +153,9 @@ def _build_spec(args, cfg):
             "workload": workload}
     if args.target:
         spec["target_node"] = args.target
+    if getattr(args, "org", None):
+        spec["org"] = args.org
+        spec["api_token"] = getattr(args, "api_token", None) or cfg.get("api_token")
     return spec
 
 
@@ -273,6 +277,8 @@ def main():
         pr.add_argument("--timeout", help="max runtime, e.g. 15m / 2h (default from config)")
         pr.add_argument("--gpu", action="store_true", help="require a GPU node")
         pr.add_argument("--target", help="pin to a specific node id")
+        pr.add_argument("--org", help="submit to this organization — routes only to its shared servers")
+        pr.add_argument("--api-token", dest="api_token", help="portal API token (or set it with `aicn config set api_token ...`)")
         pr.add_argument("--in", dest="in_files", action="append", metavar="FILE", help="input file (repeatable)")
         pr.add_argument("--out", metavar="DIR", help="save output artifacts here")
         pr.add_argument("--detach", action="store_true", help="return a job id immediately")

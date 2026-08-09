@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Servers — AICN{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:680px;">
+  <div class="card">
+    <h1 style="margin-bottom:2px;">Your servers</h1>
+    <p class="sub">Add a machine, then share it into your organizations.</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/servers" style="display:flex; gap:8px; align-items:center;">
+      <input name="name" type="text" required maxlength="80" placeholder="Server name, e.g. gpu-box-1"
+             style="flex:1;">
+      <button class="btn solid" type="submit" style="font-size:14px; padding:10px 16px; white-space:nowrap;">+ Add server</button>
+    </form>
+
+    {% if servers %}
+      <div style="margin-top:22px; display:grid; gap:10px;">
+        {% for s in servers %}
+          <a href="/servers/{{ s['id'] }}" style="text-decoration:none; color:inherit;">
+            <div style="display:flex; align-items:center; gap:12px; padding:14px 16px;
+                        background:var(--panel2); border:1px solid var(--line); border-radius:10px;">
+              <span class="dot {{ 'on' if s['fingerprint'] else 'off' }}"></span>
+              <div>
+                <div style="font-weight:600;">{{ s["name"] }}</div>
+                <div class="muted" style="font-size:12px;">
+                  {% if s["fingerprint"] %}claimed · shared with {{ s["shares"] }} org{{ "s" if s["shares"] != 1 else "" }}
+                  {% else %}<span style="color:var(--warn)">awaiting setup</span>{% endif %}
+                </div>
+              </div>
+              <span style="margin-left:auto; color:var(--muted); font-size:18px;">›</span>
+            </div>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted" style="margin-top:22px;">No servers yet. Add one to get a setup command for your machine.</p>
+    {% endif %}
+  </div>
+</div>
+<style>
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .dot.off { background:var(--muted); }
+  :root { --warn:#d29922; }
+</style>
+{% endblock %}

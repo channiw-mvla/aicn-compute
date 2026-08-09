@@ -26,6 +26,10 @@ ingress:
   - hostname: YOURDOMAIN.com
     service: http://localhost:8766
 
+  # --- the portal web app (accounts, orgs, servers, web-submitted jobs) ---
+  - hostname: app.YOURDOMAIN.com
+    service: http://localhost:8000
+
   # --- node/requester connection endpoint ---
   # cloudflared handles the ws/wss upgrade automatically; the gateway speaks
   # plain ws on localhost:8765.

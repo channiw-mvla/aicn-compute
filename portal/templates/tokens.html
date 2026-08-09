@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}API tokens — AICN{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:680px;">
+  <div class="card">
+    <h1 style="margin-bottom:2px;">API tokens</h1>
+    <p class="sub">Use a token with the <code>aicn</code> CLI to submit jobs to your organizations.</p>
+
+    {% if new_token %}
+      <div style="background:rgba(63,185,80,.1); border:1px solid rgba(63,185,80,.4); border-radius:9px; padding:14px; margin-bottom:16px;">
+        <div style="font-size:13px; color:var(--ok); margin-bottom:6px;">New token — copy it now, it won't be shown again:</div>
+        <pre onclick="var r=document.createRange();r.selectNode(this);getSelection().removeAllRanges();getSelection().addRange(r);">{{ new_token }}</pre>
+        <div class="muted" style="font-size:12px; margin-top:8px;">
+          Submit a job to an org:<br>
+          <code>aicn run script.py --api-token {{ new_token }} --org &lt;org-slug&gt;</code>
+        </div>
+      </div>
+    {% endif %}
+
+    <form method="post" action="/tokens" style="display:flex; gap:8px; align-items:center;">
+      <input name="name" type="text" maxlength="60" placeholder="Token name, e.g. laptop" style="flex:1;">
+      <button class="btn solid" type="submit" style="font-size:14px; padding:10px 16px; white-space:nowrap;">+ Create token</button>
+    </form>
+
+    {% if tokens %}
+      <div style="margin-top:20px; display:grid; gap:8px;">
+        {% for t in tokens %}
+          <div style="display:flex; align-items:center; gap:10px; padding:11px 14px;
+                      background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
+            <div>
+              <div style="font-weight:600;">{{ t["name"] }}</div>
+              <div class="muted" style="font-size:12px;">created {{ t["created_at"][:10] }} · <span class="mono">{{ t["token"][:12] }}…</span></div>
+            </div>
+            <form method="post" action="/tokens/{{ t['token'] }}/revoke" style="margin-left:auto;">
+              <button class="rowbtn danger" type="submit">Revoke</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted" style="margin-top:20px;">No tokens yet.</p>
+    {% endif %}
+  </div>
+</div>
+<style>
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto;
+    font-size:13px; color:var(--text); white-space:pre-wrap; word-break:break-all; margin:0; }
+  code { background:#0d1117; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .mono { font-family:ui-monospace,Consolas,monospace; }
+  .rowbtn { font:inherit; font-size:12px; padding:5px 11px; background:var(--panel); border:1px solid var(--line);
+    color:var(--text); border-radius:7px; cursor:pointer; }
+  .rowbtn.danger:hover { border-color:var(--bad); color:var(--bad); }
+</style>
+{% endblock %}

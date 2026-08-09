@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Job #{{ job["id"] }} — AICN{% endblock %}
+{% block head %}{% if running %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block body %}
+<div class="wrap" style="max-width:760px;">
+  <div style="margin-bottom:6px;"><a href="/orgs/{{ job['org_slug'] }}" class="muted" style="text-decoration:none;">← {{ job["org_name"] }}</a></div>
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <h1 style="margin:0;">Job #{{ job["id"] }}</h1>
+      <span class="jst {{ job['status'] }}">{{ job["status"] }}</span>
+      {% if running %}<span class="muted" style="font-size:12px;">· auto-refreshing…</span>{% endif %}
+    </div>
+
+    <div class="kv"><span class="k">Submitted by</span><span>{{ job["user_email"] }}</span></div>
+    <div class="kv"><span class="k">Interpreter</span><span>{{ job["interpreter"] }}</span></div>
+    {% if job["pip"] %}<div class="kv"><span class="k">Packages</span><span>{{ job["pip"] }}</span></div>{% endif %}
+    <div class="kv"><span class="k">Node</span><span>{{ job["node_id"] or "—" }}</span></div>
+    <div class="kv"><span class="k">Result</span><span>{{ job["result_status"] or "—" }}{% if job["exit_code"] is not none %} · exit {{ job["exit_code"] }}{% endif %}</span></div>
+    <div class="kv"><span class="k">Submitted</span><span>{{ job["created_at"][:19].replace("T", " ") }} UTC</span></div>
+
+    <h2 class="sec">Script</h2>
+    <pre>{{ job["script"] }}</pre>
+
+    {% if job["stdout"] %}<h2 class="sec">Output</h2><pre>{{ job["stdout"] }}</pre>{% endif %}
+    {% if job["stderr"] %}<h2 class="sec" style="color:var(--bad)">Errors</h2><pre style="border-color:rgba(248,81,73,.4)">{{ job["stderr"] }}</pre>{% endif %}
+    {% if not job["stdout"] and not job["stderr"] and not running %}
+      <p class="muted" style="margin-top:16px;">No output.</p>
+    {% endif %}
+  </div>
+</div>
+<style>
+  .kv { display:flex; gap:12px; padding:6px 0; font-size:14px; border-bottom:1px solid var(--line); }
+  .kv .k { color:var(--muted); width:110px; }
+  .sec { font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:22px 0 8px; }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto;
+    font-size:13px; color:var(--text); white-space:pre-wrap; word-break:break-word; margin:0; }
+  .jst { font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:3px 10px; border-radius:10px;
+    background:#30363d; color:var(--muted); }
+  .jst.running, .jst.queued { background:rgba(74,168,255,.15); color:var(--accent); }
+  .jst.done { background:rgba(63,185,80,.15); color:var(--ok); }
+  .jst.failed { background:rgba(248,81,73,.15); color:var(--bad); }
+  .jst.pending { background:rgba(210,153,34,.15); color:#d29922; }
+</style>
+{% endblock %}

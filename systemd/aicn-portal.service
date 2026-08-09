@@ -1,0 +1,21 @@
+[Unit]
+# AICN portal — the web app (accounts, orgs, servers, web-submitted jobs).
+# Runs on the GATEWAY box so it shares portal.db with the gateway. Needs its own
+# venv with the portal requirements installed (see the README).
+Description=AICN portal (web app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wchanning
+WorkingDirectory=/home/wchanning/aicn/portal
+EnvironmentFile=/home/wchanning/aicn/aicn.env
+# Bound to loopback: only the local cloudflared tunnel reaches it (served publicly
+# as app.YOURDOMAIN.com). Uses the portal's own venv (uvicorn + fastapi).
+ExecStart=/home/wchanning/aicn/portal/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

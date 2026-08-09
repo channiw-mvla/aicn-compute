@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}New organization — AICN{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="card">
+    <h1>New organization</h1>
+    <p class="sub">You'll be its first admin. You can invite members and add servers next.</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/orgs">
+      <label for="name">Organization name</label>
+      <input id="name" name="name" type="text" value="{{ name }}" required autofocus maxlength="80"
+             placeholder="e.g. Willow Lab">
+      <button class="primary" type="submit">Create organization</button>
+    </form>
+    <div class="alt"><a href="/dashboard">← Back to dashboard</a></div>
+  </div>
+</div>
+{% endblock %}

@@ -69,6 +69,9 @@ async def submit(gateway_url, job_spec, token=None, identity=None, tls_ca=None,
                    "workload": job_spec["workload"]}
             if job_spec.get("target_node"):
                 msg["target_node"] = job_spec["target_node"]
+            if job_spec.get("org"):
+                msg["org"] = job_spec["org"]
+                msg["api_token"] = job_spec.get("api_token")
             await P.send(ws, msg)
 
             streamed = False
@@ -337,6 +340,8 @@ def load_job(args):
             "needs": {"cpu": 1, "ram_mb": args.ram_mb},
             "max_runtime_sec": args.max_runtime,
             "workload": workload,
+            "org": args.org,
+            "api_token": args.api_token,
         }
     print("error: pass --job <file.json>, --script <code>, or --script-file <file>", file=sys.stderr)
     sys.exit(64)
@@ -351,6 +356,9 @@ def main():
     ap.add_argument("--tls-ca", help="CA/self-signed cert (PEM) to verify a wss:// gateway")
     ap.add_argument("--insecure", action="store_true", help="skip TLS verification (testing only)")
     ap.add_argument("--target", help="pin the job to a specific node id (default: auto-match)")
+    ap.add_argument("--org", help="submit to this organization — routes only to its shared servers "
+                    "(requires --api-token from the portal)")
+    ap.add_argument("--api-token", dest="api_token", help="portal API token identifying you as the submitter")
     ap.add_argument("--job", help="path to a job spec JSON")
     ap.add_argument("--script", help="inline script to run (with --interpreter)")
     ap.add_argument("--script-file", help="path to a script file to run (avoids shell quoting)")

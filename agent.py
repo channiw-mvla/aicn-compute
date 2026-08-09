@@ -162,6 +162,8 @@ class Agent:
             "schedule": self.config.get("schedule", []),
             "paused": self.paused,
         }
+        if self.config.get("claim_token"):
+            reg["claim_token"] = self.config["claim_token"]   # link this node to a portal account
         if self.token:
             reg["token"] = self.token
         await P.send(self.ws, reg)
@@ -544,6 +546,8 @@ async def main():
                     "use 0.0.0.0 to reach it from the LAN — then also set --panel-token)")
     ap.add_argument("--panel-token", help="require this token to view/control the local panel")
     ap.add_argument("--no-panel", action="store_true", help="do not host the local admin panel")
+    ap.add_argument("--claim-token", help="one-time token from the portal ('Add a server') that links "
+                    "this node to your account so you can share it into organizations")
     ap.add_argument("--max-job-ram", help="biggest RAM a single job may request, e.g. 24g / 8192 "
                     "(default 4g). Jobs asking for more are refused by this node.")
     ap.add_argument("--max-job-runtime", help="longest runtime a single job may request, e.g. 1h / 3600 "
@@ -552,6 +556,8 @@ async def main():
 
     config = load_config(args.config)
     config["config_path"] = args.config   # remember where to persist remote schedule edits
+    if args.claim_token:
+        config["claim_token"] = args.claim_token
     if args.gateway:
         config["gateway_url"] = args.gateway
     if args.node_id:
