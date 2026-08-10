@@ -34,9 +34,10 @@ SECURE_COOKIES = os.environ.get("AICN_PORTAL_SECURE_COOKIES", "").lower() in ("1
 db.init_db()
 
 
-def render(request: Request, name: str, status_code: int = 200, **ctx):
-    """Render a template with the current Starlette signature (request first)."""
-    return templates.TemplateResponse(request, name, ctx, status_code=status_code)
+def render(request: Request, template: str, status_code: int = 200, **ctx):
+    """Render a template with the current Starlette signature (request first).
+    The param is `template` (not `name`) so a context var named `name` can't clash."""
+    return templates.TemplateResponse(request, template, ctx, status_code=status_code)
 
 
 def current_user(request: Request):
