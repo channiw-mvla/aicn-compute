@@ -589,6 +589,12 @@ class Gateway:
                 if reg.get("claim_token"):
                     if await asyncio.to_thread(PL.claim_server, reg["claim_token"], fp):
                         self.log(f"node {node_id} claimed to a portal account ({fp})")
+                    else:
+                        self.log(f"node {node_id} claim FAILED ({fp}) — token already used, "
+                                 f"wrong organization, or this identity is registered to another server")
+                elif PL.api_mode():
+                    self.log(f"node {node_id} sent no claim token — it will not receive org jobs "
+                             f"until claimed (re-run the agent with --claim-token)")
                 node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, fp)
                 await asyncio.to_thread(PL.touch_server, fp)
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
