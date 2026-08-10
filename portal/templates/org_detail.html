@@ -16,6 +16,41 @@
     </div>
     <p class="sub" style="margin-top:6px;">/{{ org["slug"] }}</p>
 
+    <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:22px 0 10px;">Gateway</h2>
+    {% if gw_token %}
+      <div style="background:rgba(63,185,80,.1); border:1px solid rgba(63,185,80,.4); border-radius:9px; padding:14px; margin-bottom:12px;">
+        <div style="color:var(--ok); font-size:13px; margin-bottom:6px;">Gateway registered — run this on your gateway machine (token shown once):</div>
+        <pre class="cmd" onclick="var r=document.createRange();r.selectNode(this);getSelection().removeAllRanges();getSelection().addRange(r);">AICN_PORTAL_URL={{ portal_base }} AICN_GATEWAY_TOKEN={{ gw_token }} \
+python3 gateway.py --host 0.0.0.0 --authorized-keys ./authorized_keys.json --auto-approve-nodes --trusted-proxy</pre>
+      </div>
+    {% endif %}
+    {% if gateway %}
+      <div style="display:flex; align-items:center; gap:10px; padding:11px 14px; background:var(--panel2);
+                  border:1px solid var(--line); border-radius:9px;">
+        <span class="sdot {{ 'on' if gateway_online else 'off' }}"></span>
+        <div>
+          <div style="font-weight:600;">{{ gateway["name"] }}</div>
+          <div class="muted" style="font-size:12px;">
+            {{ "online" if gateway_online else ("last seen " + gateway["last_seen"][:19].replace("T"," ") if gateway["last_seen"] else "never connected") }}{% if gateway["url"] %} · {{ gateway["url"] }}{% endif %}</div>
+        </div>
+        {% if is_admin %}
+        <form method="post" action="/orgs/{{ org['slug'] }}/gateway/{{ gateway['id'] }}/delete" style="margin-left:auto;"
+              onsubmit="return confirm('Remove this gateway? Its nodes will disconnect.');">
+          <button class="rowbtn danger" type="submit">Remove</button>
+        </form>
+        {% endif %}
+      </div>
+    {% elif is_admin %}
+      <p class="muted" style="margin:0 0 10px;">No gateway yet. Register one to run this org's own hub (see SELF_HOSTING.md).</p>
+      <form method="post" action="/orgs/{{ org['slug'] }}/gateway" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <input name="name" placeholder="Gateway name" class="fld" style="width:auto;">
+        <input name="url" placeholder="Public URL (e.g. wss://gateway.myorg.com)" class="fld" style="flex:1; min-width:200px;">
+        <button class="rowbtn" type="submit">Register gateway</button>
+      </form>
+    {% else %}
+      <p class="muted" style="margin:0;">No gateway registered. Ask an admin to set one up.</p>
+    {% endif %}
+
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:22px 0 10px;">
       Members ({{ members|length }})</h2>
     <div style="display:grid; gap:8px;">
@@ -55,7 +90,7 @@
     </div>
 
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
-      Shared servers ({{ servers|length }})</h2>
+      Servers ({{ servers|length }})</h2>
     {% if servers %}
       <div style="display:grid; gap:8px;">
         {% for s in servers %}
@@ -73,9 +108,12 @@
         {% endfor %}
       </div>
     {% else %}
-      <p class="muted" style="margin:0;">No servers shared into this org yet. Members can share their
-        servers from the <a href="/servers">Servers</a> page.</p>
+      <p class="muted" style="margin:0 0 10px;">No servers in this org yet.</p>
     {% endif %}
+    <form method="post" action="/orgs/{{ org['slug'] }}/servers" style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+      <input name="name" placeholder="Add a server (name)" class="fld" style="flex:1;">
+      <button class="rowbtn" type="submit">+ Add server</button>
+    </form>
 
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
       Run a job</h2>
@@ -177,6 +215,8 @@ print("hello from", platform.node())</textarea>
   .sdot { width:9px; height:9px; border-radius:50%; flex:none; }
   .sdot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
   .sdot.off { background:var(--muted); }
+  .cmd { background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto;
+    font-size:12px; color:var(--text); white-space:pre-wrap; word-break:break-all; margin:0; cursor:text; }
   .lb { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
   .fld { width:100%; padding:9px 11px; font:inherit; color:var(--text); background:var(--panel2);
     border:1px solid var(--line); border-radius:8px; }

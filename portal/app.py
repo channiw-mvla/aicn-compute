@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 import auth
@@ -191,13 +191,17 @@ def org_detail(request: Request, slug: str):
     is_admin = m["role"] == "admin"
     servers = db.list_org_servers(org["id"])
     online = {s["id"] for s in servers if _is_online(s["last_seen"])}
+    gw = db.gateway_for_org(org["id"])
     return render(request, "org_detail.html", user=user, org=org, role=m["role"],
                   is_admin=is_admin, members=db.list_members(org["id"]),
                   invites=db.list_invites(org["id"]) if is_admin else [],
                   invite_base=str(request.base_url).rstrip("/") + "/invite/",
                   admin_count=db.count_admins(org["id"]),
                   servers=servers, online=online, any_online=bool(online),
-                  jobs=db.list_org_jobs(org["id"]))
+                  jobs=db.list_org_jobs(org["id"]),
+                  gateway=gw, gateway_online=_is_online(gw["last_seen"]) if gw else False,
+                  gw_token=request.query_params.get("gw_token"),
+                  portal_base=str(request.base_url).rstrip("/"))
 
 
 def _is_online(last_seen, secs: int = 90) -> bool:
@@ -333,20 +337,21 @@ def servers_list(request: Request):
     user = current_user(request)
     if user is None:
         return RedirectResponse("/login?next=/servers", status_code=303)
-    return render(request, "servers.html", user=user, servers=db.list_user_servers(user["id"]))
+    return render(request, "servers.html", user=user, servers=db.list_user_servers(user["id"]),
+                  orgs=db.list_user_orgs(user["id"]))
 
 
 @app.post("/servers")
-def server_create(request: Request, name: str = Form(...)):
+def server_create(request: Request, name: str = Form(...), org_id: int = Form(...)):
     user = current_user(request)
     if user is None:
         return RedirectResponse("/login", status_code=303)
     name = name.strip()
-    if not name or len(name) > 80:
+    if not name or len(name) > 80 or db.get_membership(org_id, user["id"]) is None:
         return render(request, "servers.html", status_code=400, user=user,
-                      servers=db.list_user_servers(user["id"]),
-                      error="Enter a server name (1–80 characters).")
-    srv = db.create_server(user["id"], name)
+                      servers=db.list_user_servers(user["id"]), orgs=db.list_user_orgs(user["id"]),
+                      error="Enter a server name and pick an org you belong to.")
+    srv = db.create_server(user["id"], name, org_id)
     return RedirectResponse(f"/servers/{srv['id']}", status_code=303)
 
 
@@ -358,11 +363,13 @@ def server_detail(request: Request, server_id: int):
     srv = db.get_server(server_id, owner_user_id=user["id"])
     if srv is None:
         return _deny(request, 404)
-    shared = db.server_org_ids(server_id)
-    claim_cmd = (f"aicn-agent --gateway {GATEWAY_URL} --secure "
+    org = db.get_org(srv["org_id"]) if srv["org_id"] else None
+    gw = db.gateway_for_org(srv["org_id"]) if srv["org_id"] else None
+    gw_url = (gw["url"] if gw and gw["url"] else GATEWAY_URL)
+    claim_cmd = (f"aicn-agent --gateway {gw_url} --secure "
                  f"--claim-token {srv['claim_token']}") if srv["claim_token"] else None
-    return render(request, "server_detail.html", user=user, srv=srv,
-                  orgs=db.list_user_orgs(user["id"]), shared=shared, claim_cmd=claim_cmd)
+    return render(request, "server_detail.html", user=user, srv=srv, org=org,
+                  gateway=gw, claim_cmd=claim_cmd)
 
 
 def _owned_server(request: Request, server_id: int):
@@ -409,6 +416,136 @@ def server_unshare(request: Request, server_id: int, org_id: int = Form(...)):
         return _deny(request, 404)
     db.unshare_server(server_id, org_id)
     return RedirectResponse(f"/servers/{server_id}", status_code=303)
+
+
+# -- gateway registration (org admin) ---------------------------------------
+@app.post("/orgs/{slug}/gateway")
+def gateway_create(request: Request, slug: str, name: str = Form("gateway"), url: str = Form("")):
+    user, org, m = _member_ctx(request, slug)
+    if not (org and m and m["role"] == "admin"):
+        return _deny(request, 403)
+    token = db.create_gateway(org["id"], name, url)
+    # show the token once via a flash param on the org page
+    return RedirectResponse(f"/orgs/{slug}?gw_token={token}", status_code=303)
+
+
+@app.post("/orgs/{slug}/gateway/{gateway_id}/delete")
+def gateway_delete(request: Request, slug: str, gateway_id: int):
+    user, org, m = _member_ctx(request, slug)
+    if not (org and m and m["role"] == "admin"):
+        return _deny(request, 403)
+    db.delete_gateway(gateway_id, org["id"])
+    return RedirectResponse(f"/orgs/{slug}", status_code=303)
+
+
+@app.post("/orgs/{slug}/servers")
+def org_add_server(request: Request, slug: str, name: str = Form(...)):
+    """Add a server that belongs to this org (Option A)."""
+    user, org, m = _member_ctx(request, slug)
+    if not (org and m):
+        return _deny(request, 403)
+    if name.strip():
+        srv = db.create_server(user["id"], name, org["id"])
+        return RedirectResponse(f"/servers/{srv['id']}", status_code=303)
+    return RedirectResponse(f"/orgs/{slug}", status_code=303)
+
+
+# -- the gateway API (called by remote per-org gateways) ---------------------
+# Every call authenticates with the gateway's bearer token, which resolves to
+# exactly one org. A gateway can only ever act for its own org.
+def _api_gateway(request: Request):
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    return db.get_gateway_by_token(auth[7:].strip())
+
+
+def _unauth():
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
+@app.post("/api/gw/heartbeat")
+async def gw_heartbeat(request: Request):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    db.touch_gateway(gw["id"])
+    org = db.get_org(gw["org_id"])
+    return {"org_id": gw["org_id"], "org_slug": org["slug"] if org else None,
+            "org_name": org["name"] if org else None}
+
+
+@app.post("/api/gw/claim")
+async def gw_claim(request: Request):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    sid = db.claim_server_in_org(body.get("claim_token"), body.get("fingerprint"), gw["org_id"])
+    return {"ok": sid is not None, "server_id": sid}
+
+
+@app.post("/api/gw/touch")
+async def gw_touch(request: Request):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    db.touch_server(body.get("fingerprint"))
+    return {"ok": True}
+
+
+@app.get("/api/gw/node")
+async def gw_node(request: Request, fingerprint: str = ""):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    return {"belongs": db.server_belongs_to_org(fingerprint, gw["org_id"])}
+
+
+@app.get("/api/gw/jobs/pending")
+async def gw_jobs_pending(request: Request):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    return {"jobs": db.pending_web_jobs_for_org(gw["org_id"])}
+
+
+@app.post("/api/gw/jobs/{job_id}")
+async def gw_job_update(request: Request, job_id: int):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    db.update_web_job_fields(job_id, gw["org_id"], **body)
+    return {"ok": True}
+
+
+@app.get("/api/gw/authz")
+async def gw_authz(request: Request, api_token: str = ""):
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    u = PL_user(api_token)
+    if u is None:
+        return {"ok": False}
+    member = db.get_membership(gw["org_id"], u[0]) is not None
+    return {"ok": True, "user_id": u[0], "member": member}
+
+
+def PL_user(api_token):
+    """Resolve an API token to (user_id, email) — reused by gw_authz."""
+    if not api_token:
+        return None
+    conn = db.connect()
+    try:
+        r = conn.execute(
+            "SELECT u.id AS id, u.email AS email FROM api_tokens t JOIN users u ON u.id = t.user_id "
+            "WHERE t.token = ? AND t.revoked = 0", (api_token,),
+        ).fetchone()
+        return (r["id"], r["email"]) if r else None
+    finally:
+        conn.close()
 
 
 # -- API tokens (for submitting jobs from the CLI as this user) --------------

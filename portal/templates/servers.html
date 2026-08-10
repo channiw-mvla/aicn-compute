@@ -7,11 +7,18 @@
     <p class="sub">Add a machine, then share it into your organizations.</p>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
-    <form method="post" action="/servers" style="display:flex; gap:8px; align-items:center;">
+    {% if orgs %}
+    <form method="post" action="/servers" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <input name="name" type="text" required maxlength="80" placeholder="Server name, e.g. gpu-box-1"
-             style="flex:1;">
+             style="flex:1; min-width:160px; padding:9px 11px; color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:8px;">
+      <select name="org_id" style="width:auto; padding:9px 11px; color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:8px;">
+        {% for o in orgs %}<option value="{{ o['id'] }}">{{ o["name"] }}</option>{% endfor %}
+      </select>
       <button class="btn solid" type="submit" style="font-size:14px; padding:10px 16px; white-space:nowrap;">+ Add server</button>
     </form>
+    {% else %}
+    <p class="muted">Create an <a href="/orgs/new" style="color:var(--accent)">organization</a> first — every server belongs to one.</p>
+    {% endif %}
 
     {% if servers %}
       <div style="margin-top:22px; display:grid; gap:10px;">
@@ -23,8 +30,7 @@
               <div>
                 <div style="font-weight:600;">{{ s["name"] }}</div>
                 <div class="muted" style="font-size:12px;">
-                  {% if s["fingerprint"] %}claimed · shared with {{ s["shares"] }} org{{ "s" if s["shares"] != 1 else "" }}
-                  {% else %}<span style="color:var(--warn)">awaiting setup</span>{% endif %}
+                  {% if s["org_name"] %}{{ s["org_name"] }} · {% endif %}{% if s["fingerprint"] %}claimed{% else %}<span style="color:var(--warn)">awaiting setup</span>{% endif %}
                 </div>
               </div>
               <span style="margin-left:auto; color:var(--muted); font-size:18px;">›</span>

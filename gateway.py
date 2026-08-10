@@ -583,13 +583,14 @@ class Gateway:
             node.rep_key = identity["fp"]
             fp = identity["fp"]
             # Portal link: claim the server to its owner (one-time), then learn
-            # which orgs it's shared into so jobs can route to it.
+            # which org(s) it belongs to so jobs can route to it. Runs off the
+            # event loop (the portal call may be a remote HTTP request).
             if PL.enabled():
                 if reg.get("claim_token"):
-                    if PL.claim_server(reg["claim_token"], fp):
+                    if await asyncio.to_thread(PL.claim_server, reg["claim_token"], fp):
                         self.log(f"node {node_id} claimed to a portal account ({fp})")
-                node.org_ids = PL.org_ids_for_fingerprint(fp)
-                PL.touch_server(fp)
+                node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, fp)
+                await asyncio.to_thread(PL.touch_server, fp)
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
         node.ok, node.fail = seed["ok"], seed["fail"] + seed["evict"]
         self.nodes[node_id] = node
@@ -624,7 +625,7 @@ class Gateway:
         elif mtype == P.NODE_STATS:
             node.stats = msg.get("stats", {}) or {}
             if PL.enabled() and node.identity:
-                PL.touch_server(node.rep_key)   # keep last_seen fresh for the portal
+                await asyncio.to_thread(PL.touch_server, node.rep_key)   # keep last_seen fresh
             await self.push()               # live utilization to the dashboards
         elif mtype == P.JOB_RESULT:
             job_id = msg.get("job_id")
@@ -730,16 +731,16 @@ class Gateway:
             await asyncio.sleep(2)
 
     async def _web_poll_tick(self):
-        # 0. refresh each connected node's org sharing — a server can be shared/
-        #    unshared in the portal while the agent stays connected, so re-read it
-        #    here rather than only at connect time.
-        for node in self.nodes.values():
+        await asyncio.to_thread(PL.heartbeat)   # API mode: stay online + keep our org id fresh
+        # 0. refresh each connected node's org membership — it can change in the
+        #    portal while the agent stays connected, so re-read it here.
+        for node in list(self.nodes.values()):
             if node.identity:
-                node.org_ids = PL.org_ids_for_fingerprint(node.rep_key)
-        # re-place any jobs that queued before their org's sharing became visible
+                node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, node.rep_key)
+        # re-place any jobs that queued before their org membership became visible
         await self._drain_queue()
         # 1. pick up new browser-submitted jobs
-        for wj in PL.fetch_pending_web_jobs():
+        for wj in await asyncio.to_thread(PL.fetch_pending_web_jobs):
             job_id = "web-" + uuid.uuid4().hex[:8]
             workload = {"interpreter": wj["interpreter"], "script": wj["script"], "input": ""}
             if wj.get("pip"):
@@ -751,21 +752,22 @@ class Gateway:
             job.requester_key = f"web:{wj['user_id']}"
             self.jobs[job_id] = job
             self.web_map[job_id] = wj["id"]
-            PL.mark_web_job(wj["id"], "queued", gateway_job_id=job_id)
+            await asyncio.to_thread(PL.mark_web_job, wj["id"], "queued", job_id, None)
             self.log(f"web job {wj['id']} accepted as {job_id} (org {wj['org_id']})")
             await self.submit(job)
-        # 2. sync tracked jobs' progress/results back to the portal DB
+        # 2. sync tracked jobs' progress/results back to the portal
         for gwid, web_id in list(self.web_map.items()):
             job = self.jobs.get(gwid)
             if job is None:
-                PL.finish_web_job(web_id, "failed", None, {"status": "failed", "stderr": "job was dropped"})
+                await asyncio.to_thread(PL.finish_web_job, web_id, "failed", None,
+                                        {"status": "failed", "stderr": "job was dropped"})
                 self.web_map.pop(gwid, None)
                 continue
             if job.status in (P.ST_DONE, P.ST_FAILED, P.ST_CANCELLED):
-                PL.finish_web_job(web_id, job.status, job.node_id, job.result or {})
+                await asyncio.to_thread(PL.finish_web_job, web_id, job.status, job.node_id, job.result or {})
                 self.web_map.pop(gwid, None)
             else:
-                PL.mark_web_job(web_id, job.status, node_id=job.node_id)
+                await asyncio.to_thread(PL.mark_web_job, web_id, job.status, None, job.node_id)
 
     async def _handle_submit(self, ws, msg, who, req_id, rep_key):
         job_id = msg.get("job_id") or ("job-" + uuid.uuid4().hex[:8])
@@ -780,18 +782,14 @@ class Gateway:
         org_slug = msg.get("org")
         org_id = None
         if org_slug:
-            def refuse(reason):
-                return P.send(ws, {"type": P.JOB_FAILED, "job_id": job_id, "reason": reason})
             if not PL.enabled():
-                await refuse("this gateway isn't linked to the portal (org routing unavailable)")
+                await P.send(ws, {"type": P.JOB_FAILED, "job_id": job_id,
+                                  "reason": "this gateway isn't linked to the portal (org routing unavailable)"})
                 return
-            who_user = PL.user_for_api_token(msg.get("api_token"))
-            if who_user is None:
-                await refuse("invalid or missing --api-token for an --org submission")
-                return
-            org_id = PL.org_id_for_slug(org_slug)
-            if org_id is None or not PL.user_in_org(who_user[0], org_id):
-                await refuse(f"you are not a member of organization '{org_slug}'")
+            org_id = await asyncio.to_thread(PL.authorize_org_submit, msg.get("api_token"), org_slug)
+            if org_id is None:
+                await P.send(ws, {"type": P.JOB_FAILED, "job_id": job_id,
+                                  "reason": f"not authorized to submit to '{org_slug}' — check your --api-token and org membership"})
                 return
 
         job = Job(job_id, ws,
@@ -1118,7 +1116,15 @@ async def main():
                 "HTTP port private (localhost/LAN), not public.")
 
     if PL.enabled():
-        log(f"PORTAL LINK ENABLED — org sharing + browser-submitted jobs via {PL.PORTAL_DB}")
+        if PL.api_mode():
+            info = PL.heartbeat()
+            org = (info or {}).get("org_name")
+            if org:
+                log(f"PORTAL LINK ENABLED (API) — serving org '{org}' via {PL.PORTAL_URL}")
+            else:
+                log(f"PORTAL LINK (API) — could not reach the portal at {PL.PORTAL_URL} yet; will retry")
+        else:
+            log(f"PORTAL LINK ENABLED (DB) — {PL.PORTAL_DB}")
     log(f"listening on {ws_scheme}://{args.host}:{args.port}  ({P.PROTOCOL})")
     async with websockets.serve(gw.handle, args.host, args.port, ssl=ssl_ctx,
                                 ping_interval=20, max_size=P.MAX_MSG):

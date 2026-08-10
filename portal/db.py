@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS invites (
 CREATE TABLE IF NOT EXISTS servers (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    org_id        INTEGER REFERENCES orgs(id) ON DELETE CASCADE,  -- the org this server belongs to (Option A)
     name          TEXT    NOT NULL,
     claim_token   TEXT    UNIQUE,          -- one-time token shown to the owner
     fingerprint   TEXT    UNIQUE,          -- set when the agent claims it (its keypair id)
@@ -73,6 +74,18 @@ CREATE TABLE IF NOT EXISTS servers (
     created_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_servers_org ON servers(org_id);
+
+CREATE TABLE IF NOT EXISTS gateways (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    token      TEXT    UNIQUE NOT NULL,     -- bearer token the gateway uses on the API
+    url        TEXT,                        -- public address nodes dial (e.g. wss://gateway.org.com)
+    created_at TEXT    NOT NULL,
+    last_seen  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_gateways_org ON gateways(org_id);
 
 CREATE TABLE IF NOT EXISTS server_shares (
     server_id  INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -126,6 +139,10 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        # migrate older DBs: add servers.org_id if it predates Option A
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
+        if "org_id" not in cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN org_id INTEGER REFERENCES orgs(id)")
         conn.commit()
     finally:
         conn.close()
@@ -260,6 +277,14 @@ def get_org_by_slug(slug: str):
     conn = connect()
     try:
         return conn.execute("SELECT * FROM orgs WHERE slug = ?", (slug,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_org(org_id: int):
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM orgs WHERE id = ?", (org_id,)).fetchone()
     finally:
         conn.close()
 
@@ -407,14 +432,16 @@ def revoke_invite(token: str, org_id: int) -> None:
 
 
 # -- servers -----------------------------------------------------------------
-def create_server(owner_user_id: int, name: str):
-    """Register a server to a user; returns the row (incl. its one-time claim_token)."""
+def create_server(owner_user_id: int, name: str, org_id: int):
+    """Register a server to a user, belonging to one org (Option A). Returns the
+    row (incl. its one-time claim_token)."""
     token = secrets.token_urlsafe(24)
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO servers (owner_user_id, name, claim_token, created_at) VALUES (?, ?, ?, ?)",
-            (owner_user_id, name.strip(), token, now_iso()),
+            "INSERT INTO servers (owner_user_id, org_id, name, claim_token, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (owner_user_id, org_id, name.strip(), token, now_iso()),
         )
         conn.commit()
         return conn.execute("SELECT * FROM servers WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -438,8 +465,9 @@ def list_user_servers(owner_user_id: int):
     conn = connect()
     try:
         return conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM server_shares ss WHERE ss.server_id = s.id) AS shares "
-            "FROM servers s WHERE s.owner_user_id = ? ORDER BY s.name COLLATE NOCASE",
+            "SELECT s.*, o.name AS org_name, o.slug AS org_slug "
+            "FROM servers s LEFT JOIN orgs o ON o.id = s.org_id "
+            "WHERE s.owner_user_id = ? ORDER BY s.name COLLATE NOCASE",
             (owner_user_id,),
         ).fetchall()
     finally:
@@ -543,16 +571,128 @@ def server_org_ids(server_id: int):
 
 
 def list_org_servers(org_id: int):
-    """Servers shared into an org, with owner email and claim/online info."""
+    """Servers that belong to an org (Option A), with owner email + claim/online info."""
     conn = connect()
     try:
         return conn.execute(
-            "SELECT s.*, u.email AS owner_email "
-            "FROM server_shares ss JOIN servers s ON s.id = ss.server_id "
-            "JOIN users u ON u.id = s.owner_user_id "
-            "WHERE ss.org_id = ? ORDER BY s.name COLLATE NOCASE",
+            "SELECT s.*, u.email AS owner_email FROM servers s JOIN users u ON u.id = s.owner_user_id "
+            "WHERE s.org_id = ? ORDER BY s.name COLLATE NOCASE",
             (org_id,),
         ).fetchall()
+    finally:
+        conn.close()
+
+
+# -- gateways (one per org; a remote gateway authenticates with its token) ----
+def create_gateway(org_id: int, name: str, url: str = None) -> str:
+    token = "aicngw_" + secrets.token_urlsafe(24)
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO gateways (org_id, name, token, url, created_at) VALUES (?, ?, ?, ?, ?)",
+            (org_id, name.strip() or "gateway", token, (url or "").strip() or None, now_iso()),
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def gateway_for_org(org_id: int):
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM gateways WHERE org_id = ? ORDER BY id DESC LIMIT 1", (org_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_gateway_by_token(token: str):
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM gateways WHERE token = ?", (token,)).fetchone()
+    finally:
+        conn.close()
+
+
+def touch_gateway(gateway_id: int) -> None:
+    conn = connect()
+    try:
+        conn.execute("UPDATE gateways SET last_seen = ? WHERE id = ?", (now_iso(), gateway_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_gateway(gateway_id: int, org_id: int) -> None:
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM gateways WHERE id = ? AND org_id = ?", (gateway_id, org_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# -- federation helpers (called via the gateway API, scoped to one org) -------
+def claim_server_in_org(claim_token: str, fingerprint: str, org_id: int):
+    """Claim a server that belongs to org_id. Returns server id or None."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM servers WHERE claim_token = ? AND org_id = ?", (claim_token, org_id)
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE servers SET fingerprint = ?, claimed_at = ?, claim_token = NULL, last_seen = ? "
+            "WHERE id = ?",
+            (fingerprint, now_iso(), now_iso(), row["id"]),
+        )
+        conn.commit()
+        return row["id"]
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def server_belongs_to_org(fingerprint: str, org_id: int) -> bool:
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT 1 FROM servers WHERE fingerprint = ? AND org_id = ?", (fingerprint, org_id)
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def pending_web_jobs_for_org(org_id: int):
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, org_id, user_id, interpreter, script, pip, ram_mb, max_runtime "
+            "FROM web_jobs WHERE org_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 20",
+            (org_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def update_web_job_fields(job_id: int, org_id: int, **fields):
+    """Update a web job that belongs to org_id (the gateway's org). Only known columns."""
+    allowed = {"status", "node_id", "result_status", "exit_code", "stdout", "stderr",
+               "gateway_job_id", "finished_at"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k} = ?" for k in sets)
+    conn = connect()
+    try:
+        conn.execute(f"UPDATE web_jobs SET {cols} WHERE id = ? AND org_id = ?",
+                     (*sets.values(), job_id, org_id))
+        conn.commit()
     finally:
         conn.close()
 

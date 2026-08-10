@@ -27,35 +27,13 @@
       <div class="kv"><span class="k">Last seen</span><span>{{ srv["last_seen"] or "never" }}</span></div>
     {% endif %}
 
-    <h2 class="sec">Share with organizations</h2>
-    {% if orgs %}
-      <p class="muted" style="margin:0 0 10px;">Members of a checked org can run jobs on this server.</p>
-      <div style="display:grid; gap:8px;">
-        {% for o in orgs %}
-          <div style="display:flex; align-items:center; gap:10px; padding:10px 14px;
-                      background:var(--panel2); border:1px solid var(--line); border-radius:9px;">
-            <div>
-              <div style="font-weight:600;">{{ o["name"] }}</div>
-              <div class="muted" style="font-size:12px;">You: {{ o["role"] }}</div>
-            </div>
-            <div style="margin-left:auto;">
-              {% if o["id"] in shared %}
-                <form method="post" action="/servers/{{ srv['id'] }}/unshare" style="display:inline;">
-                  <input type="hidden" name="org_id" value="{{ o['id'] }}">
-                  <button class="tag ok" style="border:none; cursor:pointer;" type="submit">✓ shared — unshare</button>
-                </form>
-              {% else %}
-                <form method="post" action="/servers/{{ srv['id'] }}/share" style="display:inline;">
-                  <input type="hidden" name="org_id" value="{{ o['id'] }}">
-                  <button class="rowbtn" type="submit">Share</button>
-                </form>
-              {% endif %}
-            </div>
-          </div>
-        {% endfor %}
-      </div>
-    {% else %}
-      <p class="muted">You're not in any organizations yet. <a href="/orgs/new">Create one</a> to share this server.</p>
+    <h2 class="sec">Organization</h2>
+    <div class="kv"><span class="k">Belongs to</span>
+      <span>{% if org %}<a href="/orgs/{{ org['slug'] }}" style="color:var(--accent); text-decoration:none;">{{ org["name"] }}</a>{% else %}—{% endif %}</span></div>
+    {% if org and (not gateway or not gateway['url']) %}
+      <p class="muted" style="font-size:12px; margin-top:8px;">
+        This org's gateway URL isn't set, so the command above uses a default. An org admin can set it
+        on the <a href="/orgs/{{ org['slug'] }}">org page</a> so the connect command is exact.</p>
     {% endif %}
 
     <h2 class="sec">Settings</h2>

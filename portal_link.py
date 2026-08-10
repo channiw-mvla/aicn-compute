@@ -1,41 +1,91 @@
-"""Bridge from the gateway to the portal database (a shared SQLite file).
+"""Bridge from a gateway to the portal — in one of two modes:
 
-Lets the gateway resolve node ownership + org sharing and authenticate job
-submitters by API token, so a job routes only to servers shared into the
-submitter's organization.
+* API mode (federated): set AICN_PORTAL_URL + AICN_GATEWAY_TOKEN. The gateway is
+  remote, run by an org, and talks to the central portal over HTTPS. Each gateway
+  serves exactly ONE org (the org its token belongs to).
 
-Enabled only when AICN_PORTAL_DB points at the portal's database. When it isn't
-set (or the file is missing), every call is a safe no-op and the gateway behaves
-exactly as before — a single flat pool. Read/write failures never raise; they
-degrade to "no info", so a portal hiccup can't take the gateway down.
+* DB mode (co-located): set AICN_PORTAL_DB to the portal's SQLite file (portal and
+  gateway on the same box).
+
+If neither is set every call is a no-op and the gateway is a plain flat pool.
+All calls fail soft (return "no info") so a portal hiccup can't crash the gateway.
 """
 
+import json
 import os
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 PORTAL_DB = os.environ.get("AICN_PORTAL_DB")
+PORTAL_URL = (os.environ.get("AICN_PORTAL_URL") or "").rstrip("/")
+GATEWAY_TOKEN = os.environ.get("AICN_GATEWAY_TOKEN")
+
+_API = bool(PORTAL_URL and GATEWAY_TOKEN)
+_org_id = None            # this gateway's org (API mode) — set by heartbeat()
+_org_slug = None
+
+
+def api_mode() -> bool:
+    return _API
 
 
 def enabled() -> bool:
-    return bool(PORTAL_DB) and os.path.exists(PORTAL_DB)
-
-
-def _conn():
-    conn = sqlite3.connect(PORTAL_DB, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _API or (bool(PORTAL_DB) and os.path.exists(PORTAL_DB))
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ============================ API mode (HTTP) ==============================
+def _api(method, path, body=None, params=None):
+    url = PORTAL_URL + path
+    if params:
+        from urllib.parse import urlencode
+        url += "?" + urlencode(params)
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + GATEWAY_TOKEN)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read() or b"null")
+    except Exception:
+        return None
+
+
+def heartbeat():
+    """API mode: mark this gateway online + learn its org. No-op in DB mode."""
+    global _org_id, _org_slug
+    if not _API:
+        return None
+    r = _api("POST", "/api/gw/heartbeat", body={})
+    if r and r.get("org_id") is not None:
+        _org_id, _org_slug = r["org_id"], r.get("org_slug")
+    return r
+
+
+def my_org_id():
+    return _org_id
+
+
+# ============================ DB mode (SQLite) =============================
+def _conn():
+    conn = sqlite3.connect(PORTAL_DB, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ============================ shared operations ============================
 def claim_server(token, fingerprint):
-    """Bind an agent's fingerprint to a server via its one-time claim token.
-    Returns the server id, or None."""
     if not (enabled() and token and fingerprint):
         return None
+    if _API:
+        r = _api("POST", "/api/gw/claim", body={"claim_token": token, "fingerprint": fingerprint})
+        return (r or {}).get("server_id")
     try:
         conn = _conn()
         try:
@@ -43,10 +93,8 @@ def claim_server(token, fingerprint):
             if row is None:
                 return None
             conn.execute(
-                "UPDATE servers SET fingerprint = ?, claimed_at = ?, claim_token = NULL, "
-                "last_seen = ? WHERE id = ?",
-                (fingerprint, _now(), _now(), row["id"]),
-            )
+                "UPDATE servers SET fingerprint=?, claimed_at=?, claim_token=NULL, last_seen=? WHERE id=?",
+                (fingerprint, _now(), _now(), row["id"]))
             conn.commit()
             return row["id"]
         finally:
@@ -55,14 +103,16 @@ def claim_server(token, fingerprint):
         return None
 
 
-def touch_server(fingerprint) -> None:
+def touch_server(fingerprint):
     if not (enabled() and fingerprint):
+        return
+    if _API:
+        _api("POST", "/api/gw/touch", body={"fingerprint": fingerprint})
         return
     try:
         conn = _conn()
         try:
-            conn.execute("UPDATE servers SET last_seen = ? WHERE fingerprint = ?",
-                         (_now(), fingerprint))
+            conn.execute("UPDATE servers SET last_seen=? WHERE fingerprint=?", (_now(), fingerprint))
             conn.commit()
         finally:
             conn.close()
@@ -70,85 +120,75 @@ def touch_server(fingerprint) -> None:
         pass
 
 
-def org_ids_for_fingerprint(fingerprint) -> set:
-    """The org ids a claimed server is shared into — the routing key."""
+def org_ids_for_fingerprint(fingerprint):
+    """The org ids a node's server belongs to — the routing key. In API mode a
+    gateway serves one org, so this is {my_org} if the node belongs, else empty."""
     if not (enabled() and fingerprint):
         return set()
+    if _API:
+        if _org_id is None:
+            return set()
+        r = _api("GET", "/api/gw/node", params={"fingerprint": fingerprint})
+        return {_org_id} if (r or {}).get("belongs") else set()
     try:
         conn = _conn()
         try:
             rows = conn.execute(
-                "SELECT ss.org_id FROM servers s JOIN server_shares ss ON ss.server_id = s.id "
-                "WHERE s.fingerprint = ?",
-                (fingerprint,),
-            ).fetchall()
-            return {r["org_id"] for r in rows}
+                "SELECT ss.org_id FROM servers s JOIN server_shares ss ON ss.server_id=s.id "
+                "WHERE s.fingerprint=?", (fingerprint,)).fetchall()
+            org = conn.execute("SELECT org_id FROM servers WHERE fingerprint=?", (fingerprint,)).fetchone()
+            out = {r["org_id"] for r in rows}
+            if org and org["org_id"] is not None:      # Option A: servers.org_id
+                out.add(org["org_id"])
+            return out
         finally:
             conn.close()
     except Exception:
         return set()
 
 
-def user_for_api_token(token):
-    """(user_id, email) for a live API token, or None."""
-    if not (enabled() and token):
+def authorize_org_submit(api_token, org_slug):
+    """Resolve a CLI --org submission: returns the org id if the api_token's user
+    may submit to org_slug, else None. Works in both modes."""
+    if not (enabled() and org_slug):
         return None
+    if _API:
+        if _org_slug is None or org_slug != _org_slug:
+            return None                                 # a gateway only serves its own org
+        r = _api("GET", "/api/gw/authz", params={"api_token": api_token or ""})
+        return _org_id if (r or {}).get("member") else None
     try:
         conn = _conn()
         try:
-            r = conn.execute(
-                "SELECT u.id AS id, u.email AS email FROM api_tokens t JOIN users u ON u.id = t.user_id "
-                "WHERE t.token = ? AND t.revoked = 0",
-                (token,),
-            ).fetchone()
-            return (r["id"], r["email"]) if r else None
+            u = conn.execute(
+                "SELECT user_id FROM api_tokens WHERE token=? AND revoked=0", (api_token,)).fetchone()
+            if u is None:
+                return None
+            org = conn.execute("SELECT id FROM orgs WHERE slug=?", (org_slug,)).fetchone()
+            if org is None:
+                return None
+            m = conn.execute("SELECT 1 FROM memberships WHERE user_id=? AND org_id=?",
+                             (u["user_id"], org["id"])).fetchone()
+            return org["id"] if m else None
         finally:
             conn.close()
     except Exception:
         return None
 
 
-def org_id_for_slug(slug):
-    if not (enabled() and slug):
-        return None
-    try:
-        conn = _conn()
-        try:
-            r = conn.execute("SELECT id FROM orgs WHERE slug = ?", (slug,)).fetchone()
-            return r["id"] if r else None
-        finally:
-            conn.close()
-    except Exception:
-        return None
-
-
-def user_in_org(user_id, org_id) -> bool:
-    if not enabled():
-        return False
-    try:
-        conn = _conn()
-        try:
-            r = conn.execute("SELECT 1 FROM memberships WHERE user_id = ? AND org_id = ?",
-                             (user_id, org_id)).fetchone()
-            return r is not None
-        finally:
-            conn.close()
-    except Exception:
-        return False
-
-
-# -- web-job queue (browser-submitted jobs the gateway runs) -----------------
+# ============================ web-job queue ===============================
 def fetch_pending_web_jobs():
-    """Pending web jobs to pick up; each returned as a plain dict."""
     if not enabled():
         return []
+    if _API:
+        r = _api("GET", "/api/gw/jobs/pending")
+        return (r or {}).get("jobs", []) or []
     try:
         conn = _conn()
         try:
             rows = conn.execute(
                 "SELECT id, org_id, user_id, interpreter, script, pip, ram_mb, max_runtime "
-                "FROM web_jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 20"
-            ).fetchall()
+                "FROM web_jobs WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -159,15 +199,21 @@ def fetch_pending_web_jobs():
 def mark_web_job(web_id, status, gateway_job_id=None, node_id=None):
     if not enabled():
         return
+    if _API:
+        body = {"status": status}
+        if gateway_job_id is not None:
+            body["gateway_job_id"] = gateway_job_id
+        if node_id is not None:
+            body["node_id"] = node_id
+        _api("POST", f"/api/gw/jobs/{web_id}", body=body)
+        return
     try:
         conn = _conn()
         try:
             conn.execute(
-                "UPDATE web_jobs SET status = ?, "
-                "gateway_job_id = COALESCE(?, gateway_job_id), "
-                "node_id = COALESCE(?, node_id) WHERE id = ?",
-                (status, gateway_job_id, node_id, web_id),
-            )
+                "UPDATE web_jobs SET status=?, gateway_job_id=COALESCE(?,gateway_job_id), "
+                "node_id=COALESCE(?,node_id) WHERE id=?",
+                (status, gateway_job_id, node_id, web_id))
             conn.commit()
         finally:
             conn.close()
@@ -176,7 +222,6 @@ def mark_web_job(web_id, status, gateway_job_id=None, node_id=None):
 
 
 def finish_web_job(web_id, status, node_id, result):
-    """Write a terminal web job's outcome back to the portal DB."""
     if not enabled():
         return
     result = result or {}
@@ -185,16 +230,22 @@ def finish_web_job(web_id, status, node_id, result):
         s = s or ""
         return s[:20000] if isinstance(s, str) else str(s)[:20000]
 
+    fields = {"status": status, "result_status": result.get("status"),
+              "exit_code": result.get("exit_code"), "stdout": clip(result.get("stdout")),
+              "stderr": clip(result.get("stderr")), "finished_at": _now()}
+    if node_id is not None:
+        fields["node_id"] = node_id
+    if _API:
+        _api("POST", f"/api/gw/jobs/{web_id}", body=fields)
+        return
     try:
         conn = _conn()
         try:
             conn.execute(
-                "UPDATE web_jobs SET status = ?, node_id = COALESCE(?, node_id), "
-                "result_status = ?, exit_code = ?, stdout = ?, stderr = ?, finished_at = ? "
-                "WHERE id = ?",
-                (status, node_id, result.get("status"), result.get("exit_code"),
-                 clip(result.get("stdout")), clip(result.get("stderr")), _now(), web_id),
-            )
+                "UPDATE web_jobs SET status=?, node_id=COALESCE(?,node_id), result_status=?, "
+                "exit_code=?, stdout=?, stderr=?, finished_at=? WHERE id=?",
+                (fields["status"], node_id, fields["result_status"], fields["exit_code"],
+                 fields["stdout"], fields["stderr"], fields["finished_at"], web_id))
             conn.commit()
         finally:
             conn.close()
