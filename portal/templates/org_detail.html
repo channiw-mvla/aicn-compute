@@ -19,9 +19,9 @@
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:22px 0 10px;">Gateway</h2>
     {% if gw_token %}
       <div style="background:rgba(63,185,80,.1); border:1px solid rgba(63,185,80,.4); border-radius:9px; padding:14px; margin-bottom:12px;">
-        <div style="color:var(--ok); font-size:13px; margin-bottom:6px;">Gateway registered — run this on your gateway machine (token shown once):</div>
-        <pre class="cmd" onclick="var r=document.createRange();r.selectNode(this);getSelection().removeAllRanges();getSelection().addRange(r);">AICN_PORTAL_URL={{ portal_base }} AICN_GATEWAY_TOKEN={{ gw_token }} \
-python3 gateway.py --host 0.0.0.0 --authorized-keys ./authorized_keys.json --auto-approve-nodes --trusted-proxy</pre>
+        <div style="color:var(--ok); font-size:13px; margin-bottom:6px;">Gateway registered — run this one command on your gateway machine (token shown once):</div>
+        <pre class="cmd" onclick="var r=document.createRange();r.selectNode(this);getSelection().removeAllRanges();getSelection().addRange(r);">curl -fsSL https://raw.githubusercontent.com/channiw-mvla/aicn-compute/main/setup-gateway.sh | bash -s -- --token {{ gw_token }} --portal {{ portal_base }}</pre>
+        <div class="muted" style="font-size:12px; margin-top:8px;">Installs the gateway, starts it, and enables it on boot.</div>
       </div>
     {% endif %}
     {% if gateway %}
