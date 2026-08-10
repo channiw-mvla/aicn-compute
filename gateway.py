@@ -730,6 +730,14 @@ class Gateway:
             await asyncio.sleep(2)
 
     async def _web_poll_tick(self):
+        # 0. refresh each connected node's org sharing — a server can be shared/
+        #    unshared in the portal while the agent stays connected, so re-read it
+        #    here rather than only at connect time.
+        for node in self.nodes.values():
+            if node.identity:
+                node.org_ids = PL.org_ids_for_fingerprint(node.rep_key)
+        # re-place any jobs that queued before their org's sharing became visible
+        await self._drain_queue()
         # 1. pick up new browser-submitted jobs
         for wj in PL.fetch_pending_web_jobs():
             job_id = "web-" + uuid.uuid4().hex[:8]

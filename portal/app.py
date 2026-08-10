@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 import auth
@@ -233,6 +233,26 @@ def job_detail(request: Request, job_id: int):
         return _deny(request, 404)
     running = job["status"] in ("pending", "queued", "running")
     return render(request, "job_detail.html", user=user, job=job, running=running)
+
+
+@app.get("/jobs/{job_id}/output")
+def job_output(request: Request, job_id: int):
+    user = current_user(request)
+    if user is None:
+        return RedirectResponse(f"/login?next=/jobs/{job_id}", status_code=303)
+    job = db.get_web_job(job_id)
+    if job is None or db.get_membership(job["org_id"], user["id"]) is None:
+        return _deny(request, 404)
+    parts = []
+    if job["stdout"]:
+        parts.append(job["stdout"])
+    if job["stderr"]:
+        parts.append(("\n" if parts else "") + "--- stderr ---\n" + job["stderr"])
+    body = "".join(parts) or "(no output)"
+    return PlainTextResponse(
+        body,
+        headers={"Content-Disposition": f'attachment; filename="job-{job_id}-output.txt"'},
+    )
 
 
 @app.post("/orgs/{slug}/invite")

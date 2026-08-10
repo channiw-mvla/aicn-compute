@@ -79,34 +79,34 @@
 
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
       Run a job</h2>
-    {% if any_online %}
-      <form method="post" action="/orgs/{{ org['slug'] }}/submit">
-        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
-          <div><label class="lb">Interpreter</label>
-            <select name="interpreter" class="fld">
-              <option value="python">python</option><option value="bash">bash</option>
-              <option value="sh">sh</option><option value="node">node</option>
-            </select></div>
-          <div><label class="lb">RAM (MB)</label><input class="fld" name="ram_mb" type="number" value="512" min="1"></div>
-          <div><label class="lb">Max runtime (s)</label><input class="fld" name="max_runtime" type="number" value="60" min="1"></div>
-        </div>
-        <label class="lb">Packages (pip, optional)</label>
-        <input class="fld" name="pip" type="text" placeholder="e.g. numpy, pandas">
-        <label class="lb">Script</label>
-        <textarea class="fld" name="script" required rows="6" style="font-family:ui-monospace,Consolas,monospace;">import platform
-print("hello from", platform.node())</textarea>
-        <button class="btn solid" type="submit" style="margin-top:12px;">Run on {{ org["name"] }}</button>
-      </form>
-    {% else %}
-      <p class="muted" style="margin:0;">No servers are online in this org right now — jobs will queue until one connects.
-        You can still submit below.</p>
-      <form method="post" action="/orgs/{{ org['slug'] }}/submit" style="margin-top:10px;">
-        <textarea class="fld" name="script" required rows="4" placeholder="Your script…"
-          style="font-family:ui-monospace,Consolas,monospace;"></textarea>
-        <input type="hidden" name="ram_mb" value="512"><input type="hidden" name="max_runtime" value="60">
-        <button class="btn solid" type="submit" style="margin-top:10px;">Submit</button>
-      </form>
+    {% if not any_online %}
+      <p class="muted" style="margin:0 0 10px;">No servers are online in this org right now — jobs will queue until one connects.</p>
     {% endif %}
+    <form method="post" action="/orgs/{{ org['slug'] }}/submit">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div><label class="lb">Interpreter</label>
+          <select name="interpreter" id="ji" class="fld">
+            <option value="python">python</option><option value="bash">bash</option>
+            <option value="sh">sh</option><option value="node">node</option>
+          </select></div>
+        <div><label class="lb">RAM (MB)</label><input class="fld" name="ram_mb" type="number" value="512" min="1"></div>
+        <div><label class="lb">Max runtime (s)</label><input class="fld" name="max_runtime" type="number" value="60" min="1"></div>
+      </div>
+
+      <label class="lb">Dependencies (pip packages, comma-separated)</label>
+      <input class="fld" name="pip" type="text" placeholder="e.g. numpy, pandas, requests">
+
+      <label class="lb">Script</label>
+      <div id="drop" class="dropzone">
+        <input type="file" id="file" accept=".py,.sh,.js,.txt" style="display:none">
+        <span id="dropmsg">Drag &amp; drop a file here, or <b>click to browse</b></span>
+      </div>
+      <textarea class="fld" name="script" id="script" required rows="8"
+        style="font-family:ui-monospace,Consolas,monospace; margin-top:8px;">import platform
+print("hello from", platform.node())</textarea>
+
+      <button class="btn solid" type="submit" style="margin-top:12px;">Run on {{ org["name"] }}</button>
+    </form>
 
     <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:26px 0 10px;">
       Recent jobs</h2>
@@ -187,5 +187,46 @@ print("hello from", platform.node())</textarea>
   .jst.done { background:rgba(63,185,80,.15); color:var(--ok); }
   .jst.failed { background:rgba(248,81,73,.15); color:var(--bad); }
   .jst.pending { background:rgba(210,153,34,.15); color:#d29922; }
+  .dropzone { border:2px dashed var(--line); border-radius:10px; padding:18px; text-align:center;
+    color:var(--muted); font-size:13px; cursor:pointer; transition:border-color .12s, background .12s; }
+  .dropzone:hover { border-color:var(--accent); }
+  .dropzone.drag { border-color:var(--accent); background:rgba(74,168,255,.08); color:var(--text); }
+  .dropzone b { color:var(--accent); }
 </style>
+<script>
+(function () {
+  var drop = document.getElementById('drop'), file = document.getElementById('file'),
+      script = document.getElementById('script'), msg = document.getElementById('dropmsg'),
+      ji = document.getElementById('ji');
+  if (!drop) return;
+  function interpFor(name) {
+    var n = (name || '').toLowerCase();
+    if (n.endsWith('.py')) return 'python';
+    if (n.endsWith('.sh')) return 'bash';
+    if (n.endsWith('.js')) return 'node';
+    return null;
+  }
+  function load(f) {
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      script.value = r.result;
+      msg.innerHTML = 'Loaded <b>' + f.name + '</b> — edit below, or drop another file';
+      var it = interpFor(f.name); if (it && ji) ji.value = it;
+    };
+    r.readAsText(f);
+  }
+  drop.addEventListener('click', function () { file.click(); });
+  file.addEventListener('change', function () { load(file.files[0]); });
+  ['dragenter', 'dragover'].forEach(function (e) {
+    drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.add('drag'); });
+  });
+  ['dragleave', 'drop'].forEach(function (e) {
+    drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.remove('drag'); });
+  });
+  drop.addEventListener('drop', function (ev) {
+    if (ev.dataTransfer && ev.dataTransfer.files.length) load(ev.dataTransfer.files[0]);
+  });
+})();
+</script>
 {% endblock %}
