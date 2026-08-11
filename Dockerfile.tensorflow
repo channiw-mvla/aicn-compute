@@ -1,0 +1,72 @@
+# Dockerfile.tensorflow — AICN worker image: TensorFlow + the common AI/ML stack.
+#
+# For hardened (Docker) nodes, which run with --network none and therefore cannot
+# pip-install anything at job time. Everything a typical job needs is baked in here.
+#
+# BUILD (on each node that should run these jobs):
+#     docker build -f Dockerfile.tensorflow -t aicn-tf:latest .
+#
+# USE (web portal): set the job's "Docker image" field to  aicn-tf:latest
+#     (leave the pip field empty)
+# USE (CLI):        aicn run train.py --image aicn-tf:latest --ram 8g --out ./results
+#
+# CPU image. For AMD GPU work use Dockerfile.rocm (torch/ROCm) — TensorFlow on AMD
+# needs the separate tensorflow-rocm build, which is not what this image provides.
+FROM tensorflow/tensorflow:latest
+
+# `python` (not python3) is what the sandbox invokes; libgomp is needed by
+# xgboost/lightgbm; the rest keeps the image lean.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# Core numerics / data
+RUN pip install --no-cache-dir \
+      numpy pandas scipy \
+      scikit-learn statsmodels \
+      matplotlib seaborn
+
+# Boosted trees + classic ML extras
+RUN pip install --no-cache-dir \
+      xgboost lightgbm joblib
+
+# Images, text, IO, progress
+RUN pip install --no-cache-dir \
+      pillow opencv-python-headless \
+      transformers tokenizers datasets \
+      requests tqdm pyyaml h5py
+
+# The container is read-only with only /tmp writable, and has NO network. Point
+# every library's cache/config at /tmp so nothing tries to write to $HOME or /root.
+# HF_HUB_OFFLINE stops transformers from stalling on a download it can never make.
+ENV HOME=/tmp \
+    MPLCONFIGDIR=/tmp/mpl \
+    KERAS_HOME=/tmp/keras \
+    HF_HOME=/tmp/hf \
+    TRANSFORMERS_CACHE=/tmp/hf \
+    XDG_CACHE_HOME=/tmp/cache \
+    HF_HUB_OFFLINE=1 \
+    PYTHONUNBUFFERED=1 \
+    TF_CPP_MIN_LOG_LEVEL=2
+
+# Fail the build early if anything above is broken.
+RUN python -c "\
+import tensorflow as tf, numpy, pandas, sklearn, scipy, matplotlib, seaborn, \
+       xgboost, lightgbm, PIL, cv2, transformers, statsmodels; \
+print('tensorflow', tf.__version__); \
+print('numpy', numpy.__version__, '| pandas', pandas.__version__, '| sklearn', sklearn.__version__); \
+print('transformers', transformers.__version__, '| xgboost', xgboost.__version__)"
+
+# ---------------------------------------------------------------------------
+# NOTES
+# * Model weights: HF_HUB_OFFLINE=1 because the sandbox has no network — a job
+#   cannot download weights at runtime. To use a pretrained model, add it to this
+#   image at build time, e.g.:
+#       RUN python -c "from transformers import AutoModel; AutoModel.from_pretrained('bert-base-uncased')" \
+#           && cp -r /tmp/hf /opt/hf
+#       ENV HF_HOME=/opt/hf TRANSFORMERS_CACHE=/opt/hf
+# * tensorflowjs is deliberately not installed: it pins older TF/protobuf versions
+#   and tends to break this image. Convert models on your own machine instead.
+# * Size is roughly 4-6 GB. Trim the pip groups above if you don't need them.
+# ---------------------------------------------------------------------------

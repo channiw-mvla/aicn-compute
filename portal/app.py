@@ -27,6 +27,31 @@ COOKIE = "aicn_session"
 SESSION_DAYS = 30
 # The gateway address shown in the "add a server" command. Set to your real one.
 GATEWAY_URL = os.environ.get("AICN_GATEWAY_URL", "wss://gateway.aicn.dev")
+
+# Images offered in the job forms. "" = let the node use its default (python:3-slim).
+# These must be built on (or pullable by) the nodes — see Dockerfile.rocm /
+# Dockerfile.tensorflow. Override with AICN_IMAGES="tag=Label,tag2=Label 2".
+def _load_images():
+    raw = os.environ.get("AICN_IMAGES")
+    if raw:
+        out = []
+        for part in raw.split(","):
+            tag, _, label = part.partition("=")
+            tag = tag.strip()
+            if tag:
+                out.append((tag, (label.strip() or tag)))
+        if out:
+            return out
+    return [
+        ("", "Default — plain Python (no extra libraries)"),
+        ("aicn-rocm:latest", "PyTorch + AI stack (AMD GPU)"),
+        ("aicn-tf:latest", "TensorFlow + AI stack (CPU)"),
+        ("python:3-slim", "python:3-slim — stdlib only"),
+        ("jupyter/scipy-notebook", "SciPy stack (numpy, pandas, sklearn)"),
+    ]
+
+
+IMAGE_CHOICES = _load_images()
 # Set AICN_PORTAL_SECURE_COOKIES=1 in production (behind HTTPS/the tunnel) so the
 # session cookie is only sent over TLS. Off by default for local http testing.
 SECURE_COOKIES = os.environ.get("AICN_PORTAL_SECURE_COOKIES", "").lower() in ("1", "true", "yes")
@@ -201,7 +226,15 @@ def org_detail(request: Request, slug: str):
                   jobs=db.list_org_jobs(org["id"]),
                   gateway=gw, gateway_online=_is_online(gw["last_seen"]) if gw else False,
                   gw_token=request.query_params.get("gw_token"),
-                  portal_base=str(request.base_url).rstrip("/"))
+                  portal_base=str(request.base_url).rstrip("/"),
+                  images=IMAGE_CHOICES)
+
+
+def _resolve_image(image: str, image_custom: str) -> str:
+    """The job form offers a dropdown plus a 'Custom…' option with a text box."""
+    if (image or "").strip() == "__custom__":
+        return (image_custom or "").strip()
+    return (image or "").strip()
 
 
 def _is_online(last_seen, secs: int = 90) -> bool:
@@ -216,14 +249,16 @@ def _is_online(last_seen, secs: int = 90) -> bool:
 @app.post("/orgs/{slug}/submit")
 def org_submit(request: Request, slug: str, script: str = Form(...),
                interpreter: str = Form("python"), pip: str = Form(""),
-               image: str = Form(""), ram_mb: int = Form(512), max_runtime: int = Form(60)):
+               image: str = Form(""), image_custom: str = Form(""),
+               ram_mb: int = Form(512), max_runtime: int = Form(60)):
     user, org, m = _member_ctx(request, slug)
     if not (org and m):                     # must be a member of the org
         return _deny(request, 403)
     if not script.strip():
         return RedirectResponse(f"/orgs/{slug}", status_code=303)
     jid = db.create_web_job(org["id"], user["id"], interpreter, script.strip(),
-                            pip.strip(), ram_mb, max_runtime, image)
+                            pip.strip(), ram_mb, max_runtime,
+                            _resolve_image(image, image_custom))
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
@@ -236,12 +271,16 @@ def job_detail(request: Request, job_id: int):
     if job is None or db.get_membership(job["org_id"], user["id"]) is None:
         return _deny(request, 404)
     running = job["status"] in ("pending", "queued", "running")
-    return render(request, "job_detail.html", user=user, job=job, running=running)
+    known = {v for v, _ in IMAGE_CHOICES}
+    return render(request, "job_detail.html", user=user, job=job, running=running,
+                  images=IMAGE_CHOICES,
+                  image_is_custom=bool(job["image"]) and job["image"] not in known)
 
 
 @app.post("/jobs/{job_id}/rerun")
 def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str = Form(""),
-              image: str = Form(""), interpreter: str = Form("python"),
+              image: str = Form(""), image_custom: str = Form(""),
+              interpreter: str = Form("python"),
               ram_mb: int = Form(512), max_runtime: int = Form(60)):
     """Submit a new job based on this one — dependencies and script editable."""
     user = current_user(request)
@@ -253,7 +292,8 @@ def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str =
     if not script.strip():
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
     new_id = db.create_web_job(job["org_id"], user["id"], interpreter, script.strip(),
-                               pip.strip(), ram_mb, max_runtime, image)
+                               pip.strip(), ram_mb, max_runtime,
+                               _resolve_image(image, image_custom))
     return RedirectResponse(f"/jobs/{new_id}", status_code=303)
 
 

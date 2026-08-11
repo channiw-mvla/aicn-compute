@@ -131,8 +131,13 @@
         <div><label class="lb">Max runtime (s)</label><input class="fld" name="max_runtime" type="number" value="60" min="1"></div>
       </div>
 
-      <label class="lb">Docker image — how hardened nodes get dependencies</label>
-      <input class="fld" name="image" type="text" placeholder="e.g. python:3-slim, tensorflow/tensorflow:latest">
+      <label class="lb">Environment (Docker image) — how hardened nodes get dependencies</label>
+      <select class="fld" name="image" id="imgsel" onchange="aicnImg()">
+        {% for value, label in images %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+        <option value="__custom__">Custom image…</option>
+      </select>
+      <input class="fld" name="image_custom" id="imgcustom" type="text" style="display:none; margin-top:6px;"
+             placeholder="e.g. myuser/myimage:latest">
       <label class="lb">pip packages — <span style="color:#d29922">trusted (subprocess) nodes only</span></label>
       <input class="fld" name="pip" type="text" placeholder="e.g. numpy, pandas, requests">
       <p class="muted" style="font-size:12px; margin:6px 0 0;">
@@ -239,6 +244,13 @@ print("hello from", platform.node())</textarea>
   .dropzone b { color:var(--accent); }
 </style>
 <script>
+// Show the free-text box only when "Custom image…" is picked.
+function aicnImg() {
+  var sel = document.getElementById('imgsel'), box = document.getElementById('imgcustom');
+  if (!sel || !box) return;
+  box.style.display = sel.value === '__custom__' ? 'block' : 'none';
+  if (sel.value === '__custom__') box.focus();
+}
 // Auto-refresh so server/gateway status and job progress stay current. Skips
 // while you're typing (focused field, or an edited script) so nothing is lost.
 (function () {
