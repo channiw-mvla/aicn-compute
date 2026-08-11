@@ -239,6 +239,24 @@ def job_detail(request: Request, job_id: int):
     return render(request, "job_detail.html", user=user, job=job, running=running)
 
 
+@app.post("/jobs/{job_id}/rerun")
+def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str = Form(""),
+              interpreter: str = Form("python"), ram_mb: int = Form(512),
+              max_runtime: int = Form(60)):
+    """Submit a new job based on this one — dependencies and script editable."""
+    user = current_user(request)
+    if user is None:
+        return RedirectResponse(f"/login?next=/jobs/{job_id}", status_code=303)
+    job = db.get_web_job(job_id)
+    if job is None or db.get_membership(job["org_id"], user["id"]) is None:
+        return _deny(request, 404)
+    if not script.strip():
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    new_id = db.create_web_job(job["org_id"], user["id"], interpreter, script.strip(),
+                               pip.strip(), ram_mb, max_runtime)
+    return RedirectResponse(f"/jobs/{new_id}", status_code=303)
+
+
 @app.get("/jobs/{job_id}/output")
 def job_output(request: Request, job_id: int):
     user = current_user(request)

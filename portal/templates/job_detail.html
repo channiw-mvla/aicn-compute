@@ -29,6 +29,31 @@
     {% if not job["stdout"] and not job["stderr"] and not running %}
       <p class="muted" style="margin-top:16px;">No output.</p>
     {% endif %}
+
+    <h2 class="sec">Re-run</h2>
+    <p class="muted" style="margin:0 0 10px; font-size:13px;">
+      Adjust the dependencies or script and submit it again as a new job.</p>
+    <form method="post" action="/jobs/{{ job['id'] }}/rerun">
+      <label class="lb">Dependencies (pip packages, comma-separated)</label>
+      <input class="fld" name="pip" type="text" value="{{ job['pip'] or '' }}"
+             placeholder="e.g. numpy, pandas, requests">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px;">
+        <div><label class="lb">Interpreter</label>
+          <select name="interpreter" class="fld">
+            {% for i in ["python", "bash", "sh", "node"] %}
+              <option value="{{ i }}" {% if job["interpreter"] == i %}selected{% endif %}>{{ i }}</option>
+            {% endfor %}
+          </select></div>
+        <div><label class="lb">RAM (MB)</label>
+          <input class="fld" name="ram_mb" type="number" min="1" value="{{ job['ram_mb'] }}"></div>
+        <div><label class="lb">Max runtime (s)</label>
+          <input class="fld" name="max_runtime" type="number" min="1" value="{{ job['max_runtime'] }}"></div>
+      </div>
+      <label class="lb">Script</label>
+      <textarea class="fld" name="script" rows="8" required
+        style="font-family:ui-monospace,Consolas,monospace;">{{ job["script"] }}</textarea>
+      <button class="btn solid" type="submit" style="margin-top:12px;">↻ Re-run job</button>
+    </form>
   </div>
 </div>
 <style>
@@ -43,6 +68,11 @@
   .jst.done { background:rgba(63,185,80,.15); color:var(--ok); }
   .jst.failed { background:rgba(248,81,73,.15); color:var(--bad); }
   .jst.pending { background:rgba(210,153,34,.15); color:#d29922; }
+  .lb { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  .fld { width:100%; padding:9px 11px; font:inherit; color:var(--text); background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; }
+  .fld:focus { outline:none; border-color:var(--accent); }
+  textarea.fld { resize:vertical; font-size:13px; }
   .dlbtn { font-size:12px; padding:6px 12px; border:1px solid var(--line); border-radius:8px;
     color:var(--text); text-decoration:none; white-space:nowrap; }
   .dlbtn:hover { border-color:var(--accent); color:var(--accent); }
