@@ -132,6 +132,7 @@ class Gateway:
         self.done_order = deque()     # completion order, for bounding the store
         self.done_cap = 500           # keep at most this many finished jobs
         self.web_map = {}             # gateway job_id -> portal web_jobs.id (browser submissions)
+        self._node_state = {}         # fingerprint -> last state pushed to the portal
 
     # -- logging + live state ------------------------------------------------
     def log(self, msg, record=True):
@@ -616,6 +617,10 @@ class Gateway:
         finally:
             self.nodes.pop(node_id, None)
             self.log(f"node {node_id} disconnected")
+            if PL.enabled() and node.identity:
+                # tell the portal immediately — don't make it wait for a timeout
+                self._node_state.pop(node.rep_key, None)
+                await asyncio.to_thread(PL.report_state, node.rep_key, "offline")
             if node.busy_job:
                 self.reputation.record(node.rep_key, "evict")  # dropped a job mid-run
                 await self._requeue(node.busy_job, node_id)
@@ -729,6 +734,28 @@ class Gateway:
                 if job.requester_ws is ws:
                     job.requester_ws = None
 
+    @staticmethod
+    def _node_state_of(node: Node) -> str:
+        """What the portal should show for this node right now."""
+        if node.paused:
+            return "paused"
+        if node.busy_job:
+            return "busy"
+        if not node.available:
+            return "unavailable"
+        return "available"
+
+    async def _push_node_state(self, node: Node, state=None):
+        """Send a node's state to the portal, but only when it changes."""
+        if not (PL.enabled() and node.identity):
+            return
+        fp = node.rep_key
+        state = state or self._node_state_of(node)
+        if self._node_state.get(fp) == state:
+            return
+        self._node_state[fp] = state
+        await asyncio.to_thread(PL.report_state, fp, state)
+
     # -- web-job queue (browser submissions via the shared portal DB) --------
     async def _web_poll_loop(self):
         while True:
@@ -745,6 +772,7 @@ class Gateway:
         for node in list(self.nodes.values()):
             if node.identity:
                 node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, node.rep_key)
+                await self._push_node_state(node)   # only sends when it changes
         # re-place any jobs that queued before their org membership became visible
         await self._drain_queue()
         # 1. pick up new browser-submitted jobs

@@ -251,7 +251,12 @@ def _server_view(rows, online_ids):
             d["hw"] = _json.loads(r["hardware"]) if r["hardware"] else {}
         except Exception:
             d["hw"] = {}
-        d["online"] = r["id"] in online_ids
+        # The gateway pushes `state` explicitly (including 'offline' on
+        # disconnect), so trust it. Fall back to the last_seen window only for
+        # servers claimed before this existed.
+        st = d.get("state")
+        d["online"] = (st not in (None, "offline")) if st else (r["id"] in online_ids)
+        d["state"] = st or ("available" if d["online"] else "offline")
         gpus = d["hw"].get("gpus") or []
         d["gpu_name"] = gpus[0].get("name") if gpus else None
         d["gpu_vram_gb"] = round((gpus[0].get("vram_mb") or 0) / 1024, 1) if gpus else None
@@ -630,6 +635,17 @@ async def gw_node_info(request: Request):
     db.report_server_info(body.get("fingerprint"), body.get("node_id"),
                           body.get("hardware"), org_id=gw["org_id"],
                           sandbox=body.get("sandbox"))
+    return {"ok": True}
+
+
+@app.post("/api/gw/node-state")
+async def gw_node_state(request: Request):
+    """A gateway pushes a node's live state, including 'offline' on disconnect."""
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    db.set_server_state(body.get("fingerprint"), body.get("state"), org_id=gw["org_id"])
     return {"ok": True}
 
 

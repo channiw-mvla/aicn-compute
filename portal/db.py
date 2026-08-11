@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS servers (
     node_id       TEXT,                    -- id the node registered with on its gateway
     hardware      TEXT,                    -- JSON snapshot reported by the gateway
     sandbox       TEXT,                    -- how jobs are isolated: hardened/docker/subprocess
+    state         TEXT,                    -- live: available/busy/paused/unavailable/offline
     created_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(owner_user_id);
@@ -161,7 +162,8 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "org_id" not in cols:
             conn.execute("ALTER TABLE servers ADD COLUMN org_id INTEGER REFERENCES orgs(id)")
-        for col, decl in (("node_id", "TEXT"), ("hardware", "TEXT"), ("sandbox", "TEXT")):
+        for col, decl in (("node_id", "TEXT"), ("hardware", "TEXT"), ("sandbox", "TEXT"),
+                          ("state", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE servers ADD COLUMN {col} {decl}")
         jcols = {r["name"] for r in conn.execute("PRAGMA table_info(web_jobs)").fetchall()}
@@ -567,6 +569,28 @@ def touch_server(fingerprint: str) -> None:
     try:
         conn.execute("UPDATE servers SET last_seen = ? WHERE fingerprint = ?",
                      (now_iso(), fingerprint))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_server_state(fingerprint: str, state: str, org_id=None) -> None:
+    """Live node state pushed by the gateway (available/busy/paused/offline).
+    Authoritative — the gateway sets 'offline' the moment a node disconnects."""
+    if not fingerprint:
+        return
+    conn = connect()
+    try:
+        if org_id is not None:
+            ok = conn.execute("SELECT 1 FROM servers WHERE fingerprint = ? AND org_id = ?",
+                              (fingerprint, org_id)).fetchone()
+            if ok is None:
+                return
+        if state == "offline":
+            conn.execute("UPDATE servers SET state = ? WHERE fingerprint = ?", (state, fingerprint))
+        else:
+            conn.execute("UPDATE servers SET state = ?, last_seen = ? WHERE fingerprint = ?",
+                         (state, now_iso(), fingerprint))
         conn.commit()
     finally:
         conn.close()

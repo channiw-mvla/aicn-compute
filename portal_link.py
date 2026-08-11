@@ -162,6 +162,29 @@ def report_node(fingerprint, node_id, hardware, sandbox=None):
         pass
 
 
+def report_state(fingerprint, state):
+    """Push a node's live state (available/busy/paused/unavailable/offline).
+    Called on change and on disconnect, so the portal never has to guess."""
+    if not (enabled() and fingerprint and state):
+        return
+    if _API:
+        _api("POST", "/api/gw/node-state", body={"fingerprint": fingerprint, "state": state})
+        return
+    try:
+        conn = _conn()
+        try:
+            if state == "offline":
+                conn.execute("UPDATE servers SET state=? WHERE fingerprint=?", (state, fingerprint))
+            else:
+                conn.execute("UPDATE servers SET state=?, last_seen=? WHERE fingerprint=?",
+                             (state, _now(), fingerprint))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def org_ids_for_fingerprint(fingerprint):
     """The org ids a node's server belongs to — the routing key. In API mode a
     gateway serves one org, so this is {my_org} if the node belongs, else empty."""
