@@ -162,6 +162,7 @@ class Agent:
             "schedule": self.config.get("schedule", []),
             "paused": self.paused,
         }
+        reg["sandbox"] = self.sandbox_kind     # how this node isolates jobs
         if self.config.get("claim_token"):
             reg["claim_token"] = self.config["claim_token"]   # link this node to a portal account
         if self.token:

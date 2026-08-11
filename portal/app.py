@@ -628,7 +628,8 @@ async def gw_node_info(request: Request):
         return _unauth()
     body = await request.json()
     db.report_server_info(body.get("fingerprint"), body.get("node_id"),
-                          body.get("hardware"), org_id=gw["org_id"])
+                          body.get("hardware"), org_id=gw["org_id"],
+                          sandbox=body.get("sandbox"))
     return {"ok": True}
 
 

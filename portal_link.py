@@ -137,14 +137,15 @@ def touch_server(fingerprint):
         pass
 
 
-def report_node(fingerprint, node_id, hardware):
-    """Tell the portal what this node is (id + hardware) so it can be shown and
-    targeted in the web UI."""
+def report_node(fingerprint, node_id, hardware, sandbox=None):
+    """Tell the portal what this node is (id, hardware, sandbox kind) so it can
+    be shown and targeted in the web UI."""
     if not (enabled() and fingerprint):
         return
     if _API:
         _api("POST", "/api/gw/node-info",
-             body={"fingerprint": fingerprint, "node_id": node_id, "hardware": hardware})
+             body={"fingerprint": fingerprint, "node_id": node_id,
+                   "hardware": hardware, "sandbox": sandbox})
         return
     try:
         hw = json.dumps(hardware) if isinstance(hardware, (dict, list)) else None
@@ -152,7 +153,8 @@ def report_node(fingerprint, node_id, hardware):
         try:
             conn.execute(
                 "UPDATE servers SET node_id=COALESCE(?,node_id), hardware=COALESCE(?,hardware), "
-                "last_seen=? WHERE fingerprint=?", (node_id, hw, _now(), fingerprint))
+                "sandbox=COALESCE(?,sandbox), last_seen=? WHERE fingerprint=?",
+                (node_id, hw, sandbox, _now(), fingerprint))
             conn.commit()
         finally:
             conn.close()

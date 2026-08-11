@@ -597,7 +597,8 @@ class Gateway:
                              f"until claimed (re-run the agent with --claim-token)")
                 node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, fp)
                 # report what this node is, so the portal can show + target it
-                await asyncio.to_thread(PL.report_node, fp, node_id, node.hardware)
+                await asyncio.to_thread(PL.report_node, fp, node_id, node.hardware,
+                                        reg.get("sandbox"))
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
         node.ok, node.fail = seed["ok"], seed["fail"] + seed["evict"]
         self.nodes[node_id] = node

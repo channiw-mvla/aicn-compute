@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS servers (
     last_seen     TEXT,
     node_id       TEXT,                    -- id the node registered with on its gateway
     hardware      TEXT,                    -- JSON snapshot reported by the gateway
+    sandbox       TEXT,                    -- how jobs are isolated: hardened/docker/subprocess
     created_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(owner_user_id);
@@ -160,7 +161,7 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "org_id" not in cols:
             conn.execute("ALTER TABLE servers ADD COLUMN org_id INTEGER REFERENCES orgs(id)")
-        for col, decl in (("node_id", "TEXT"), ("hardware", "TEXT")):
+        for col, decl in (("node_id", "TEXT"), ("hardware", "TEXT"), ("sandbox", "TEXT")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE servers ADD COLUMN {col} {decl}")
         jcols = {r["name"] for r in conn.execute("PRAGMA table_info(web_jobs)").fetchall()}
@@ -571,7 +572,7 @@ def touch_server(fingerprint: str) -> None:
         conn.close()
 
 
-def report_server_info(fingerprint: str, node_id, hardware, org_id=None) -> None:
+def report_server_info(fingerprint: str, node_id, hardware, org_id=None, sandbox=None) -> None:
     """Record what a connected node is (node id + hardware JSON). Called by the
     gateway; when org_id is given the server must belong to that org."""
     import json as _json
@@ -587,8 +588,8 @@ def report_server_info(fingerprint: str, node_id, hardware, org_id=None) -> None
                 return
         conn.execute(
             "UPDATE servers SET node_id = COALESCE(?, node_id), hardware = COALESCE(?, hardware), "
-            "last_seen = ? WHERE fingerprint = ?",
-            (node_id, hw, now_iso(), fingerprint))
+            "sandbox = COALESCE(?, sandbox), last_seen = ? WHERE fingerprint = ?",
+            (node_id, hw, sandbox, now_iso(), fingerprint))
         conn.commit()
     finally:
         conn.close()

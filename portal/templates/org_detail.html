@@ -106,8 +106,13 @@
                     color:{{ 'var(--ok)' if s['online'] else 'var(--muted)' }};">
                 {{ "online" if s["online"] else ("offline" if s["fingerprint"] else "not set up") }}</span>
             </div>
-            {% if s["hw"] %}
+            {% if s["hw"] or s["sandbox"] %}
               <div class="specs">
+                {% if s["sandbox"] in ("hardened", "docker") %}
+                  <span class="spec sandbox-ok" title="Jobs run in a locked-down Docker container (no network, no privileges, read-only)">🛡 Docker sandbox</span>
+                {% elif s["sandbox"] == "subprocess" %}
+                  <span class="spec sandbox-weak" title="Jobs run as normal processes — not a hard security boundary. Trusted code only.">⚠ subprocess (trusted only)</span>
+                {% endif %}
                 {% if s["hw"].get("cpu") %}<span class="spec"><b>{{ s["hw"]["cpu"] }}</b> vCPU</span>{% endif %}
                 {% if s["ram_gb"] %}<span class="spec"><b>{{ s["ram_gb"] }}</b> GB RAM</span>{% endif %}
                 {% if s["gpu_name"] %}
@@ -259,6 +264,8 @@ print("hello from", platform.node())</textarea>
     border:1px solid var(--line); color:var(--muted); }
   .spec b { color:var(--text); font-weight:600; }
   .spec.gpu { border-color:rgba(63,185,80,.4); color:var(--ok); }
+  .spec.sandbox-ok { border-color:rgba(63,185,80,.4); color:var(--ok); }
+  .spec.sandbox-weak { border-color:rgba(210,153,34,.5); color:#d29922; }
   .mono2 { font-family:ui-monospace,Consolas,monospace; }
   .cmd { background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto;
     font-size:12px; color:var(--text); white-space:pre-wrap; word-break:break-all; margin:0; cursor:text; }
