@@ -234,6 +234,18 @@ print("hello from", platform.node())</textarea>
   .dropzone b { color:var(--accent); }
 </style>
 <script>
+// Auto-refresh so server/gateway status and job progress stay current. Skips
+// while you're typing (focused field, or an edited script) so nothing is lost.
+(function () {
+  var script = document.getElementById('script');
+  var original = script ? script.value : '';
+  setInterval(function () {
+    var el = document.activeElement, tag = el ? el.tagName : '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (script && script.value !== original) return;   // don't discard an edited script
+    location.reload();
+  }, 15000);
+})();
 (function () {
   var drop = document.getElementById('drop'), file = document.getElementById('file'),
       script = document.getElementById('script'), msg = document.getElementById('dropmsg'),
