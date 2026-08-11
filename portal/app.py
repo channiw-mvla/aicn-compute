@@ -219,8 +219,10 @@ def org_detail(request: Request, slug: str):
     is_admin = m["role"] == "admin"
     rows = db.list_org_servers(org["id"])
     online = {s["id"] for s in rows if _is_online(s["last_seen"])}
-    servers = _server_view(rows, online)
     gw = db.gateway_for_org(org["id"])
+    # the gateway heartbeats every ~2s; 60s of silence means it's gone
+    gw_alive = _is_online(gw["last_seen"], 60) if gw else False
+    servers = _server_view(rows, online, gateway_alive=gw_alive)
     return render(request, "org_detail.html", user=user, org=org, role=m["role"],
                   is_admin=is_admin, members=db.list_members(org["id"]),
                   invites=db.list_invites(org["id"]) if is_admin else [],
@@ -228,7 +230,7 @@ def org_detail(request: Request, slug: str):
                   admin_count=db.count_admins(org["id"]),
                   servers=servers, online=online, any_online=bool(online),
                   jobs=db.list_org_jobs(org["id"]),
-                  gateway=gw, gateway_online=_is_online(gw["last_seen"]) if gw else False,
+                  gateway=gw, gateway_online=gw_alive,
                   gw_token=request.query_params.get("gw_token"),
                   portal_base=str(request.base_url).rstrip("/"),
                   images=IMAGE_CHOICES)
@@ -241,8 +243,12 @@ def _resolve_image(image: str, image_custom: str) -> str:
     return (image or "").strip()
 
 
-def _server_view(rows, online_ids):
-    """Server rows + parsed hardware, ready for the templates."""
+def _server_view(rows, online_ids, gateway_alive=True):
+    """Server rows + parsed hardware, ready for the templates.
+
+    `gateway_alive` matters because node state is pushed BY the gateway: if the
+    gateway itself stopped reporting, the last state it wrote is stale and its
+    nodes must not be shown as available."""
     import json as _json
     out = []
     for r in rows:
@@ -257,6 +263,9 @@ def _server_view(rows, online_ids):
         st = d.get("state")
         d["online"] = (st not in (None, "offline")) if st else (r["id"] in online_ids)
         d["state"] = st or ("available" if d["online"] else "offline")
+        if not gateway_alive and d["online"]:
+            # its gateway is silent — we genuinely don't know, so don't claim online
+            d["state"], d["online"] = "gw_offline", False
         gpus = d["hw"].get("gpus") or []
         d["gpu_name"] = gpus[0].get("name") if gpus else None
         d["gpu_vram_gb"] = round((gpus[0].get("vram_mb") or 0) / 1024, 1) if gpus else None
@@ -306,11 +315,13 @@ def job_detail(request: Request, job_id: int):
     known = {v for v, _ in IMAGE_CHOICES}
     rows = db.list_org_servers(job["org_id"])
     online = {s["id"] for s in rows if _is_online(s["last_seen"])}
+    jgw = db.gateway_for_org(job["org_id"])
+    jgw_alive = _is_online(jgw["last_seen"], 60) if jgw else False
     return render(request, "job_detail.html", user=user, job=job, running=running,
                   images=IMAGE_CHOICES,
                   image_is_custom=bool(job["image"]) and job["image"] not in known,
                   artifacts=db.list_job_artifacts(job_id),
-                  servers=_server_view(rows, online))
+                  servers=_server_view(rows, online, gateway_alive=jgw_alive))
 
 
 @app.post("/jobs/{job_id}/rerun")

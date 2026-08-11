@@ -31,7 +31,9 @@
         <div>
           <div style="font-weight:600;">{{ gateway["name"] }}</div>
           <div class="muted" style="font-size:12px;">
-            {{ "online" if gateway_online else ("last seen " + gateway["last_seen"][:19].replace("T"," ") if gateway["last_seen"] else "never connected") }}{% if gateway["url"] %} · {{ gateway["url"] }}{% endif %}</div>
+            {% if gateway_online %}online{% else %}<span style="color:var(--bad)">not reporting</span>
+              {% if gateway["last_seen"] %} — last seen {{ gateway["last_seen"][:19].replace("T"," ") }} UTC{% else %} — never connected{% endif %}
+            {% endif %}{% if gateway["url"] %} · {{ gateway["url"] }}{% endif %}</div>
         </div>
         {% if is_admin %}
         <form method="post" action="/orgs/{{ org['slug'] }}/gateway/{{ gateway['id'] }}/delete" style="margin-left:auto;"
@@ -108,6 +110,7 @@
                 {% elif s["state"] == "paused" %}paused
                 {% elif s["state"] == "unavailable" %}unavailable
                 {% elif s["state"] == "available" %}available
+                {% elif s["state"] == "gw_offline" %}gateway offline
                 {% else %}offline{% endif %}</span>
             </div>
             {% if s["hw"] or s["sandbox"] %}
@@ -269,6 +272,8 @@ print("hello from", platform.node())</textarea>
   .state.available { color:var(--ok); }
   .state.busy { color:var(--accent); }
   .state.paused, .state.unavailable { color:#d29922; }
+  .state.gw_offline { color:var(--bad); }
+  .sdot.gw_offline { background:var(--bad); }
   .specs { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .spec { font-size:11px; padding:3px 8px; border-radius:6px; background:var(--panel);
     border:1px solid var(--line); color:var(--muted); }
