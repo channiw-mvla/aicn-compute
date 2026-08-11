@@ -16,6 +16,7 @@
 
     <div class="kv"><span class="k">Submitted by</span><span>{{ job["user_email"] }}</span></div>
     <div class="kv"><span class="k">Interpreter</span><span>{{ job["interpreter"] }}</span></div>
+    {% if job["image"] %}<div class="kv"><span class="k">Image</span><span class="mono">{{ job["image"] }}</span></div>{% endif %}
     {% if job["pip"] %}<div class="kv"><span class="k">Packages</span><span>{{ job["pip"] }}</span></div>{% endif %}
     <div class="kv"><span class="k">Node</span><span>{{ job["node_id"] or "—" }}</span></div>
     <div class="kv"><span class="k">Result</span><span>{{ job["result_status"] or "—" }}{% if job["exit_code"] is not none %} · exit {{ job["exit_code"] }}{% endif %}</span></div>
@@ -34,9 +35,15 @@
     <p class="muted" style="margin:0 0 10px; font-size:13px;">
       Adjust the dependencies or script and submit it again as a new job.</p>
     <form method="post" action="/jobs/{{ job['id'] }}/rerun">
-      <label class="lb">Dependencies (pip packages, comma-separated)</label>
+      <label class="lb">Docker image — how hardened nodes get dependencies</label>
+      <input class="fld" name="image" type="text" value="{{ job['image'] or '' }}"
+             placeholder="e.g. python:3-slim, tensorflow/tensorflow:latest">
+      <label class="lb">pip packages — <span style="color:#d29922">trusted (subprocess) nodes only</span></label>
       <input class="fld" name="pip" type="text" value="{{ job['pip'] or '' }}"
              placeholder="e.g. numpy, pandas, requests">
+      <p class="muted" style="font-size:12px; margin:6px 0 0;">
+        Hardened (Docker) nodes run with no network, so per-job pip cannot install anything —
+        give an image that already contains your dependencies.</p>
       <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px;">
         <div><label class="lb">Interpreter</label>
           <select name="interpreter" class="fld">
@@ -68,6 +75,7 @@
   .jst.done { background:rgba(63,185,80,.15); color:var(--ok); }
   .jst.failed { background:rgba(248,81,73,.15); color:var(--bad); }
   .jst.pending { background:rgba(210,153,34,.15); color:#d29922; }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
   .lb { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
   .fld { width:100%; padding:9px 11px; font:inherit; color:var(--text); background:var(--panel2);
     border:1px solid var(--line); border-radius:8px; }

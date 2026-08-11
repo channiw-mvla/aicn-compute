@@ -131,8 +131,13 @@
         <div><label class="lb">Max runtime (s)</label><input class="fld" name="max_runtime" type="number" value="60" min="1"></div>
       </div>
 
-      <label class="lb">Dependencies (pip packages, comma-separated)</label>
+      <label class="lb">Docker image — how hardened nodes get dependencies</label>
+      <input class="fld" name="image" type="text" placeholder="e.g. python:3-slim, tensorflow/tensorflow:latest">
+      <label class="lb">pip packages — <span style="color:#d29922">trusted (subprocess) nodes only</span></label>
       <input class="fld" name="pip" type="text" placeholder="e.g. numpy, pandas, requests">
+      <p class="muted" style="font-size:12px; margin:6px 0 0;">
+        Hardened (Docker) nodes run with no network, so per-job pip cannot install anything —
+        give an image that already contains your dependencies.</p>
 
       <label class="lb">Script</label>
       <div id="drop" class="dropzone">

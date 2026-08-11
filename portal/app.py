@@ -216,14 +216,14 @@ def _is_online(last_seen, secs: int = 90) -> bool:
 @app.post("/orgs/{slug}/submit")
 def org_submit(request: Request, slug: str, script: str = Form(...),
                interpreter: str = Form("python"), pip: str = Form(""),
-               ram_mb: int = Form(512), max_runtime: int = Form(60)):
+               image: str = Form(""), ram_mb: int = Form(512), max_runtime: int = Form(60)):
     user, org, m = _member_ctx(request, slug)
     if not (org and m):                     # must be a member of the org
         return _deny(request, 403)
     if not script.strip():
         return RedirectResponse(f"/orgs/{slug}", status_code=303)
     jid = db.create_web_job(org["id"], user["id"], interpreter, script.strip(),
-                            pip.strip(), ram_mb, max_runtime)
+                            pip.strip(), ram_mb, max_runtime, image)
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
@@ -241,8 +241,8 @@ def job_detail(request: Request, job_id: int):
 
 @app.post("/jobs/{job_id}/rerun")
 def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str = Form(""),
-              interpreter: str = Form("python"), ram_mb: int = Form(512),
-              max_runtime: int = Form(60)):
+              image: str = Form(""), interpreter: str = Form("python"),
+              ram_mb: int = Form(512), max_runtime: int = Form(60)):
     """Submit a new job based on this one — dependencies and script editable."""
     user = current_user(request)
     if user is None:
@@ -253,7 +253,7 @@ def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str =
     if not script.strip():
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
     new_id = db.create_web_job(job["org_id"], user["id"], interpreter, script.strip(),
-                               pip.strip(), ram_mb, max_runtime)
+                               pip.strip(), ram_mb, max_runtime, image)
     return RedirectResponse(f"/jobs/{new_id}", status_code=303)
 
 

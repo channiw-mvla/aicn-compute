@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS web_jobs (
     gateway_job_id TEXT,                          -- set when the gateway picks it up
     interpreter    TEXT    NOT NULL DEFAULT 'python',
     script         TEXT    NOT NULL,
-    pip            TEXT,                           -- comma-separated packages
+    pip            TEXT,                           -- comma-separated packages (subprocess nodes only)
+    image          TEXT,                           -- Docker image (hardened nodes: deps baked in)
     ram_mb         INTEGER NOT NULL DEFAULT 512,
     max_runtime    INTEGER NOT NULL DEFAULT 60,
     status         TEXT    NOT NULL DEFAULT 'pending',  -- pending/queued/running/done/failed
@@ -143,6 +144,9 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "org_id" not in cols:
             conn.execute("ALTER TABLE servers ADD COLUMN org_id INTEGER REFERENCES orgs(id)")
+        jcols = {r["name"] for r in conn.execute("PRAGMA table_info(web_jobs)").fetchall()}
+        if jcols and "image" not in jcols:
+            conn.execute("ALTER TABLE web_jobs ADD COLUMN image TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -680,7 +684,7 @@ def pending_web_jobs_for_org(org_id: int):
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, org_id, user_id, interpreter, script, pip, ram_mb, max_runtime "
+            "SELECT id, org_id, user_id, interpreter, script, pip, image, ram_mb, max_runtime "
             "FROM web_jobs WHERE org_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 20",
             (org_id,),
         ).fetchall()
@@ -757,13 +761,14 @@ def revoke_api_token(token: str, user_id: int) -> None:
 
 
 # -- web jobs (submitted from the browser; the gateway runs them) -------------
-def create_web_job(org_id, user_id, interpreter, script, pip, ram_mb, max_runtime):
+def create_web_job(org_id, user_id, interpreter, script, pip, ram_mb, max_runtime, image=None):
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO web_jobs (org_id, user_id, interpreter, script, pip, ram_mb, "
-            "max_runtime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (org_id, user_id, interpreter, script, pip or None, int(ram_mb), int(max_runtime), now_iso()),
+            "INSERT INTO web_jobs (org_id, user_id, interpreter, script, pip, image, ram_mb, "
+            "max_runtime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (org_id, user_id, interpreter, script, pip or None, (image or "").strip() or None,
+             int(ram_mb), int(max_runtime), now_iso()),
         )
         conn.commit()
         return cur.lastrowid

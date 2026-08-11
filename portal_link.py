@@ -204,7 +204,7 @@ def fetch_pending_web_jobs():
         conn = _conn()
         try:
             rows = conn.execute(
-                "SELECT id, org_id, user_id, interpreter, script, pip, ram_mb, max_runtime "
+                "SELECT id, org_id, user_id, interpreter, script, pip, image, ram_mb, max_runtime "
                 "FROM web_jobs WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
             return [dict(r) for r in rows]
         finally:

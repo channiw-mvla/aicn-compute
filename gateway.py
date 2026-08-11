@@ -751,6 +751,8 @@ class Gateway:
             workload = {"interpreter": wj["interpreter"], "script": wj["script"], "input": ""}
             if wj.get("pip"):
                 workload["pip"] = [p.strip() for p in wj["pip"].split(",") if p.strip()]
+            if wj.get("image"):
+                workload["image"] = wj["image"]   # hardened nodes: deps baked into the image
             job = Job(job_id, None,
                       needs={"cpu": 1, "ram_mb": wj["ram_mb"]},
                       max_runtime=wj["max_runtime"], workload=workload)
