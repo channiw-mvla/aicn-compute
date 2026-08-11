@@ -21,6 +21,7 @@ import http.server
 import json
 import os
 import socket
+import sys
 import threading
 import uuid
 
@@ -35,7 +36,25 @@ from sandbox import make_sandbox, docker_available
 from scheduler import Scheduler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PANEL_HTML = os.path.join(HERE, "agent_panel.html")
+
+
+def _find_panel_html():
+    """Locate agent_panel.html. Next to the module when run from a source
+    checkout; under <prefix>/share/aicn when pip/pipx-installed (a flat
+    py-modules layout can't carry package data)."""
+    candidates = [
+        os.path.join(HERE, "agent_panel.html"),
+        os.path.join(sys.prefix, "share", "aicn", "agent_panel.html"),
+        os.path.join(os.path.dirname(os.path.dirname(sys.executable)),
+                     "share", "aicn", "agent_panel.html"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return candidates[0]      # keep the source path for the error message
+
+
+PANEL_HTML = _find_panel_html()
 
 DEFAULT_CONFIG = {
     "node_id": None,

@@ -25,3 +25,9 @@ py-modules = [
     "aicn", "agent", "client", "protocol", "identity",
     "tlsutil", "hardware", "policy", "sandbox", "scheduler",
 ]
+
+# The agent hosts a local admin panel, so its HTML must ship with the install —
+# a flat py-modules layout has no package dir to attach package-data to, so it
+# goes to <prefix>/share/aicn and agent.py looks for it there.
+[tool.setuptools.data-files]
+"share/aicn" = ["agent_panel.html"]
