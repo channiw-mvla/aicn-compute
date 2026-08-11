@@ -772,7 +772,12 @@ class Gateway:
                 self.web_map.pop(gwid, None)
                 continue
             if job.status in (P.ST_DONE, P.ST_FAILED, P.ST_CANCELLED):
-                await asyncio.to_thread(PL.finish_web_job, web_id, job.status, job.node_id, job.result or {})
+                result = job.result or {}
+                await asyncio.to_thread(PL.finish_web_job, web_id, job.status, job.node_id, result)
+                arts = result.get("artifacts") or {}
+                if arts:      # files the job wrote to $AICN_OUTPUT_DIR
+                    await asyncio.to_thread(PL.save_web_artifacts, web_id, arts)
+                    self.log(f"web job {web_id}: stored {len(arts)} artifact(s)")
                 self.web_map.pop(gwid, None)
             else:
                 await asyncio.to_thread(PL.mark_web_job, web_id, job.status, None, job.node_id)

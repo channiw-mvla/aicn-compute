@@ -9,11 +9,14 @@ Run it:
     uvicorn app:app --host 0.0.0.0 --port 8000
 """
 
+import io
 import os
+import zipfile
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               RedirectResponse, Response)
 from fastapi.templating import Jinja2Templates
 
 import auth
@@ -274,7 +277,8 @@ def job_detail(request: Request, job_id: int):
     known = {v for v, _ in IMAGE_CHOICES}
     return render(request, "job_detail.html", user=user, job=job, running=running,
                   images=IMAGE_CHOICES,
-                  image_is_custom=bool(job["image"]) and job["image"] not in known)
+                  image_is_custom=bool(job["image"]) and job["image"] not in known,
+                  artifacts=db.list_job_artifacts(job_id))
 
 
 @app.post("/jobs/{job_id}/rerun")
@@ -295,6 +299,40 @@ def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str =
                                pip.strip(), ram_mb, max_runtime,
                                _resolve_image(image, image_custom))
     return RedirectResponse(f"/jobs/{new_id}", status_code=303)
+
+
+@app.get("/jobs/{job_id}/artifacts/{artifact_id}")
+def job_artifact_download(request: Request, job_id: int, artifact_id: int):
+    user = current_user(request)
+    if user is None:
+        return RedirectResponse(f"/login?next=/jobs/{job_id}", status_code=303)
+    art = db.get_job_artifact(artifact_id)
+    if art is None or art["job_id"] != job_id or db.get_membership(art["org_id"], user["id"]) is None:
+        return _deny(request, 404)
+    fname = os.path.basename(art["name"]) or "artifact"
+    return Response(
+        content=art["data"], media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.get("/jobs/{job_id}/artifacts.zip")
+def job_artifacts_zip(request: Request, job_id: int):
+    """All of a job's output files as one zip."""
+    user = current_user(request)
+    if user is None:
+        return RedirectResponse(f"/login?next=/jobs/{job_id}", status_code=303)
+    job = db.get_web_job(job_id)
+    if job is None or db.get_membership(job["org_id"], user["id"]) is None:
+        return _deny(request, 404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for row in db.list_job_artifacts(job_id):
+            art = db.get_job_artifact(row["id"])
+            if art is not None:
+                z.writestr(art["name"], art["data"])
+    return Response(
+        content=buf.getvalue(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="job-{job_id}-artifacts.zip"'})
 
 
 @app.get("/jobs/{job_id}/output")
@@ -577,6 +615,17 @@ async def gw_job_update(request: Request, job_id: int):
     body = await request.json()
     db.update_web_job_fields(job_id, gw["org_id"], **body)
     return {"ok": True}
+
+
+@app.post("/api/gw/jobs/{job_id}/artifacts")
+async def gw_job_artifacts(request: Request, job_id: int):
+    """A gateway uploads a finished job's output files ({name: base64})."""
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    n = db.save_job_artifacts(job_id, body.get("artifacts") or {}, org_id=gw["org_id"])
+    return {"ok": True, "saved": n}
 
 
 @app.get("/api/gw/authz")

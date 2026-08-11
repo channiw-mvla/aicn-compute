@@ -124,7 +124,20 @@ CREATE TABLE IF NOT EXISTS web_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_web_jobs_org ON web_jobs(org_id);
 CREATE INDEX IF NOT EXISTS idx_web_jobs_status ON web_jobs(status);
+
+CREATE TABLE IF NOT EXISTS job_artifacts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     INTEGER NOT NULL REFERENCES web_jobs(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,           -- path relative to $AICN_OUTPUT_DIR
+    size       INTEGER NOT NULL,
+    data       BLOB    NOT NULL,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_artifacts_job ON job_artifacts(job_id);
 """
+
+# Total artifact bytes stored per job (the sandbox caps collection too).
+ARTIFACT_CAP = 25 * 1024 * 1024
 
 ROLES = ("admin", "member")
 
@@ -784,6 +797,64 @@ def list_org_jobs(org_id, limit=25):
             "WHERE j.org_id = ? ORDER BY j.id DESC LIMIT ?",
             (org_id, limit),
         ).fetchall()
+    finally:
+        conn.close()
+
+
+def save_job_artifacts(job_id, artifacts, org_id=None):
+    """Store a job's output files. `artifacts` is {name: base64-string}, exactly
+    as the sandbox collects them. Stops at ARTIFACT_CAP so one runaway job can't
+    fill the disk. When org_id is given the job must belong to it (gateway API)."""
+    import base64
+    if not artifacts:
+        return 0
+    conn = connect()
+    try:
+        if org_id is not None:
+            own = conn.execute("SELECT 1 FROM web_jobs WHERE id = ? AND org_id = ?",
+                               (job_id, org_id)).fetchone()
+            if own is None:
+                return 0
+        conn.execute("DELETE FROM job_artifacts WHERE job_id = ?", (job_id,))   # idempotent
+        total, saved = 0, 0
+        for name, b64 in artifacts.items():
+            try:
+                blob = base64.b64decode(b64)
+            except Exception:
+                continue
+            if total + len(blob) > ARTIFACT_CAP:
+                break
+            total += len(blob)
+            conn.execute(
+                "INSERT INTO job_artifacts (job_id, name, size, data, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (job_id, str(name)[:300], len(blob), blob, now_iso()),
+            )
+            saved += 1
+        conn.commit()
+        return saved
+    finally:
+        conn.close()
+
+
+def list_job_artifacts(job_id):
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT id, name, size FROM job_artifacts WHERE job_id = ? ORDER BY name",
+            (job_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_job_artifact(artifact_id):
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT a.*, j.org_id AS org_id FROM job_artifacts a "
+            "JOIN web_jobs j ON j.id = a.job_id WHERE a.id = ?", (artifact_id,),
+        ).fetchone()
     finally:
         conn.close()
 

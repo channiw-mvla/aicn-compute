@@ -238,6 +238,39 @@ def mark_web_job(web_id, status, gateway_job_id=None, node_id=None):
         pass
 
 
+def save_web_artifacts(web_id, artifacts):
+    """Store a finished web job's output files ({name: base64}) in the portal."""
+    if not (enabled() and artifacts):
+        return
+    if _API:
+        _api("POST", f"/api/gw/jobs/{web_id}/artifacts", body={"artifacts": artifacts})
+        return
+    try:
+        import base64
+        cap = 25 * 1024 * 1024
+        conn = _conn()
+        try:
+            conn.execute("DELETE FROM job_artifacts WHERE job_id=?", (web_id,))
+            total = 0
+            for name, b64 in artifacts.items():
+                try:
+                    blob = base64.b64decode(b64)
+                except Exception:
+                    continue
+                if total + len(blob) > cap:
+                    break
+                total += len(blob)
+                conn.execute(
+                    "INSERT INTO job_artifacts (job_id, name, size, data, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (web_id, str(name)[:300], len(blob), blob, _now()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def finish_web_job(web_id, status, node_id, result):
     if not enabled():
         return
