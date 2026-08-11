@@ -162,7 +162,13 @@ class Agent:
             "schedule": self.config.get("schedule", []),
             "paused": self.paused,
         }
-        reg["sandbox"] = self.sandbox_kind     # how this node isolates jobs
+        # Report the sandbox AND whether it actually works right now. A node
+        # started with --sandbox hardened but no working Docker must not be
+        # advertised as isolated — it can't run anything, and claiming otherwise
+        # would tell members it is safe for untrusted code.
+        reg["sandbox"] = self.sandbox_kind
+        reg["sandbox_ok"] = (docker_available()
+                             if self.sandbox_kind in ("docker", "hardened") else True)
         if self.config.get("claim_token"):
             reg["claim_token"] = self.config["claim_token"]   # link this node to a portal account
         if self.token:
