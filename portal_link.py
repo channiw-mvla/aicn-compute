@@ -40,7 +40,11 @@ def _now() -> str:
 
 
 # ============================ API mode (HTTP) ==============================
+last_error = None          # why the most recent API call failed (for logging)
+
+
 def _api(method, path, body=None, params=None):
+    global last_error
     url = PORTAL_URL + path
     if params:
         from urllib.parse import urlencode
@@ -48,12 +52,25 @@ def _api(method, path, body=None, params=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", "Bearer " + GATEWAY_TOKEN)
+    # Identify ourselves properly: the default "Python-urllib/x.y" user agent is
+    # blocked as a bot by Cloudflare (403) when the portal sits behind a tunnel.
+    req.add_header("User-Agent", "AICN-Gateway/0.2")
+    req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
+            last_error = None
             return json.loads(r.read() or b"null")
-    except Exception:
+    except urllib.error.HTTPError as e:
+        # 401 means the portal answered and rejected us — a very different
+        # problem from "unreachable", so say so.
+        last_error = ("this gateway's token was rejected (401) — it may have been "
+                      "removed or re-registered in the portal; update AICN_GATEWAY_TOKEN"
+                      if e.code == 401 else f"portal returned HTTP {e.code}")
+        return None
+    except Exception as e:
+        last_error = f"cannot reach the portal: {e}"
         return None
 
 

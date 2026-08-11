@@ -121,7 +121,10 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   sudo systemctl daemon-reload
-  sudo systemctl enable --now aicn-gateway
+  sudo systemctl enable aicn-gateway
+  # restart (not just `enable --now`): an already-running service would otherwise
+  # keep the OLD gateway.env in memory and go on using a stale token
+  sudo systemctl restart aicn-gateway
   sleep 2
   systemctl is-active --quiet aicn-gateway && say "gateway is running" || warn "check: journalctl -u aicn-gateway -n 40"
   RUNHINT="systemctl status aicn-gateway   ·   journalctl -u aicn-gateway -f"

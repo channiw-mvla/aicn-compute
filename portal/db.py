@@ -432,10 +432,19 @@ def revoke_invite(token: str, org_id: int) -> None:
 
 
 # -- servers -----------------------------------------------------------------
+def _cli_token(n: int = 24) -> str:
+    """A URL-safe token that never starts with '-' — it's passed as a command-line
+    argument (--claim-token …), and argparse would read a leading dash as a flag."""
+    while True:
+        t = secrets.token_urlsafe(n)
+        if not t.startswith("-"):
+            return t
+
+
 def create_server(owner_user_id: int, name: str, org_id: int):
     """Register a server to a user, belonging to one org (Option A). Returns the
     row (incl. its one-time claim_token)."""
-    token = secrets.token_urlsafe(24)
+    token = _cli_token(24)
     conn = connect()
     try:
         cur = conn.execute(

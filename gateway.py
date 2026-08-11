@@ -1128,7 +1128,8 @@ async def main():
             if org:
                 log(f"PORTAL LINK ENABLED (API) — serving org '{org}' via {PL.PORTAL_URL}")
             else:
-                log(f"PORTAL LINK (API) — could not reach the portal at {PL.PORTAL_URL} yet; will retry")
+                log(f"PORTAL LINK (API) NOT WORKING — {PL.last_error or 'no response'} "
+                    f"({PL.PORTAL_URL}); will retry")
         else:
             log(f"PORTAL LINK ENABLED (DB) — {PL.PORTAL_DB}")
     log(f"listening on {ws_scheme}://{args.host}:{args.port}  ({P.PROTOCOL})")
