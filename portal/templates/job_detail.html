@@ -81,6 +81,16 @@
           if (sel.value === '__custom__') box.focus();
         }
       </script>
+      <label class="lb">Run on</label>
+      <select class="fld" name="target_fp">
+        <option value="">Any available server</option>
+        {% for s in servers %}{% if s["fingerprint"] %}
+          <option value="{{ s['fingerprint'] }}" {% if job["target_fp"] == s["fingerprint"] %}selected{% endif %}>
+            {{ s["name"] }}{% if s["gpu_name"] %} — {{ s["gpu_name"] }}{% elif s["hw"].get("cpu") %} — {{ s["hw"]["cpu"] }} vCPU{% endif %}{% if not s["online"] %} (offline){% endif %}
+          </option>
+        {% endif %}{% endfor %}
+      </select>
+
       <label class="lb">pip packages — <span style="color:#d29922">trusted (subprocess) nodes only</span></label>
       <input class="fld" name="pip" type="text" value="{{ job['pip'] or '' }}"
              placeholder="e.g. numpy, pandas, requests">

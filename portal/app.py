@@ -217,8 +217,9 @@ def org_detail(request: Request, slug: str):
     if org is None or m is None:
         return _deny(request, 404)          # don't reveal orgs you're not in
     is_admin = m["role"] == "admin"
-    servers = db.list_org_servers(org["id"])
-    online = {s["id"] for s in servers if _is_online(s["last_seen"])}
+    rows = db.list_org_servers(org["id"])
+    online = {s["id"] for s in rows if _is_online(s["last_seen"])}
+    servers = _server_view(rows, online)
     gw = db.gateway_for_org(org["id"])
     return render(request, "org_detail.html", user=user, org=org, role=m["role"],
                   is_admin=is_admin, members=db.list_members(org["id"]),
@@ -240,6 +241,25 @@ def _resolve_image(image: str, image_custom: str) -> str:
     return (image or "").strip()
 
 
+def _server_view(rows, online_ids):
+    """Server rows + parsed hardware, ready for the templates."""
+    import json as _json
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["hw"] = _json.loads(r["hardware"]) if r["hardware"] else {}
+        except Exception:
+            d["hw"] = {}
+        d["online"] = r["id"] in online_ids
+        gpus = d["hw"].get("gpus") or []
+        d["gpu_name"] = gpus[0].get("name") if gpus else None
+        d["gpu_vram_gb"] = round((gpus[0].get("vram_mb") or 0) / 1024, 1) if gpus else None
+        d["ram_gb"] = round((d["hw"].get("ram_mb") or 0) / 1024, 1) if d["hw"].get("ram_mb") else None
+        out.append(d)
+    return out
+
+
 def _is_online(last_seen, secs: int = 90) -> bool:
     if not last_seen:
         return False
@@ -253,15 +273,19 @@ def _is_online(last_seen, secs: int = 90) -> bool:
 def org_submit(request: Request, slug: str, script: str = Form(...),
                interpreter: str = Form("python"), pip: str = Form(""),
                image: str = Form(""), image_custom: str = Form(""),
-               ram_mb: int = Form(512), max_runtime: int = Form(60)):
+               target_fp: str = Form(""), ram_mb: int = Form(512),
+               max_runtime: int = Form(60)):
     user, org, m = _member_ctx(request, slug)
     if not (org and m):                     # must be a member of the org
         return _deny(request, 403)
     if not script.strip():
         return RedirectResponse(f"/orgs/{slug}", status_code=303)
+    # only allow pinning to a server that belongs to this org
+    if target_fp and not db.server_belongs_to_org(target_fp, org["id"]):
+        target_fp = ""
     jid = db.create_web_job(org["id"], user["id"], interpreter, script.strip(),
                             pip.strip(), ram_mb, max_runtime,
-                            _resolve_image(image, image_custom))
+                            _resolve_image(image, image_custom), target_fp)
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
@@ -275,16 +299,19 @@ def job_detail(request: Request, job_id: int):
         return _deny(request, 404)
     running = job["status"] in ("pending", "queued", "running")
     known = {v for v, _ in IMAGE_CHOICES}
+    rows = db.list_org_servers(job["org_id"])
+    online = {s["id"] for s in rows if _is_online(s["last_seen"])}
     return render(request, "job_detail.html", user=user, job=job, running=running,
                   images=IMAGE_CHOICES,
                   image_is_custom=bool(job["image"]) and job["image"] not in known,
-                  artifacts=db.list_job_artifacts(job_id))
+                  artifacts=db.list_job_artifacts(job_id),
+                  servers=_server_view(rows, online))
 
 
 @app.post("/jobs/{job_id}/rerun")
 def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str = Form(""),
               image: str = Form(""), image_custom: str = Form(""),
-              interpreter: str = Form("python"),
+              interpreter: str = Form("python"), target_fp: str = Form(""),
               ram_mb: int = Form(512), max_runtime: int = Form(60)):
     """Submit a new job based on this one — dependencies and script editable."""
     user = current_user(request)
@@ -295,9 +322,11 @@ def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str =
         return _deny(request, 404)
     if not script.strip():
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    if target_fp and not db.server_belongs_to_org(target_fp, job["org_id"]):
+        target_fp = ""
     new_id = db.create_web_job(job["org_id"], user["id"], interpreter, script.strip(),
                                pip.strip(), ram_mb, max_runtime,
-                               _resolve_image(image, image_custom))
+                               _resolve_image(image, image_custom), target_fp)
     return RedirectResponse(f"/jobs/{new_id}", status_code=303)
 
 
@@ -588,6 +617,18 @@ async def gw_touch(request: Request):
         return _unauth()
     body = await request.json()
     db.touch_server(body.get("fingerprint"))
+    return {"ok": True}
+
+
+@app.post("/api/gw/node-info")
+async def gw_node_info(request: Request):
+    """A gateway reports a connected node's id + hardware for display/targeting."""
+    gw = _api_gateway(request)
+    if gw is None:
+        return _unauth()
+    body = await request.json()
+    db.report_server_info(body.get("fingerprint"), body.get("node_id"),
+                          body.get("hardware"), org_id=gw["org_id"])
     return {"ok": True}
 
 

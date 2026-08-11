@@ -596,7 +596,8 @@ class Gateway:
                     self.log(f"node {node_id} sent no claim token — it will not receive org jobs "
                              f"until claimed (re-run the agent with --claim-token)")
                 node.org_ids = await asyncio.to_thread(PL.org_ids_for_fingerprint, fp)
-                await asyncio.to_thread(PL.touch_server, fp)
+                # report what this node is, so the portal can show + target it
+                await asyncio.to_thread(PL.report_node, fp, node_id, node.hardware)
         seed = self.reputation.get(node.rep_key)   # carry history across reconnects
         node.ok, node.fail = seed["ok"], seed["fail"] + seed["evict"]
         self.nodes[node_id] = node
@@ -758,6 +759,15 @@ class Gateway:
                       max_runtime=wj["max_runtime"], workload=workload)
             job.org_id = wj["org_id"]
             job.requester_key = f"web:{wj['user_id']}"
+            if wj.get("target_fp"):
+                # the submitter pinned a specific server — resolve its identity
+                # fingerprint to the node id currently connected with that key
+                for n in self.nodes.values():
+                    if n.rep_key == wj["target_fp"]:
+                        job.target_node = n.id
+                        break
+                else:
+                    job.target_node = "__offline__"   # pinned server isn't connected
             self.jobs[job_id] = job
             self.web_map[job_id] = wj["id"]
             await asyncio.to_thread(PL.mark_web_job, wj["id"], "queued", job_id, None)

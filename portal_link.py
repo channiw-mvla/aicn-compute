@@ -137,6 +137,29 @@ def touch_server(fingerprint):
         pass
 
 
+def report_node(fingerprint, node_id, hardware):
+    """Tell the portal what this node is (id + hardware) so it can be shown and
+    targeted in the web UI."""
+    if not (enabled() and fingerprint):
+        return
+    if _API:
+        _api("POST", "/api/gw/node-info",
+             body={"fingerprint": fingerprint, "node_id": node_id, "hardware": hardware})
+        return
+    try:
+        hw = json.dumps(hardware) if isinstance(hardware, (dict, list)) else None
+        conn = _conn()
+        try:
+            conn.execute(
+                "UPDATE servers SET node_id=COALESCE(?,node_id), hardware=COALESCE(?,hardware), "
+                "last_seen=? WHERE fingerprint=?", (node_id, hw, _now(), fingerprint))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def org_ids_for_fingerprint(fingerprint):
     """The org ids a node's server belongs to — the routing key. In API mode a
     gateway serves one org, so this is {my_org} if the node belongs, else empty."""
@@ -204,8 +227,8 @@ def fetch_pending_web_jobs():
         conn = _conn()
         try:
             rows = conn.execute(
-                "SELECT id, org_id, user_id, interpreter, script, pip, image, ram_mb, max_runtime "
-                "FROM web_jobs WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
+                "SELECT id, org_id, user_id, interpreter, script, pip, image, ram_mb, max_runtime, "
+                "target_fp FROM web_jobs WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
