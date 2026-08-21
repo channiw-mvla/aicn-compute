@@ -287,8 +287,8 @@ def _is_online(last_seen, secs: int = 90) -> bool:
 def org_submit(request: Request, slug: str, script: str = Form(...),
                interpreter: str = Form("python"), pip: str = Form(""),
                image: str = Form(""), image_custom: str = Form(""),
-               target_fp: str = Form(""), ram_mb: int = Form(512),
-               max_runtime: int = Form(60)):
+               target_fp: str = Form(""), gpu: str = Form(""),
+               ram_mb: int = Form(512), max_runtime: int = Form(60)):
     user, org, m = _member_ctx(request, slug)
     if not (org and m):                     # must be a member of the org
         return _deny(request, 403)
@@ -299,7 +299,7 @@ def org_submit(request: Request, slug: str, script: str = Form(...),
         target_fp = ""
     jid = db.create_web_job(org["id"], user["id"], interpreter, script.strip(),
                             pip.strip(), ram_mb, max_runtime,
-                            _resolve_image(image, image_custom), target_fp)
+                            _resolve_image(image, image_custom), target_fp, bool(gpu))
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
@@ -328,7 +328,8 @@ def job_detail(request: Request, job_id: int):
 def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str = Form(""),
               image: str = Form(""), image_custom: str = Form(""),
               interpreter: str = Form("python"), target_fp: str = Form(""),
-              ram_mb: int = Form(512), max_runtime: int = Form(60)):
+              gpu: str = Form(""), ram_mb: int = Form(512),
+              max_runtime: int = Form(60)):
     """Submit a new job based on this one — dependencies and script editable."""
     user = current_user(request)
     if user is None:
@@ -342,7 +343,7 @@ def job_rerun(request: Request, job_id: int, script: str = Form(...), pip: str =
         target_fp = ""
     new_id = db.create_web_job(job["org_id"], user["id"], interpreter, script.strip(),
                                pip.strip(), ram_mb, max_runtime,
-                               _resolve_image(image, image_custom), target_fp)
+                               _resolve_image(image, image_custom), target_fp, bool(gpu))
     return RedirectResponse(f"/jobs/{new_id}", status_code=303)
 
 

@@ -783,8 +783,11 @@ class Gateway:
                 workload["pip"] = [p.strip() for p in wj["pip"].split(",") if p.strip()]
             if wj.get("image"):
                 workload["image"] = wj["image"]   # hardened nodes: deps baked into the image
+            needs = {"cpu": 1, "ram_mb": wj["ram_mb"]}
+            if wj.get("gpu"):
+                needs["gpu"] = 1      # sandbox passes the GPU device through
             job = Job(job_id, None,
-                      needs={"cpu": 1, "ram_mb": wj["ram_mb"]},
+                      needs=needs,
                       max_runtime=wj["max_runtime"], workload=workload)
             job.org_id = wj["org_id"]
             job.requester_key = f"web:{wj['user_id']}"

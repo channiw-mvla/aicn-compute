@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS web_jobs (
     script         TEXT    NOT NULL,
     pip            TEXT,                           -- comma-separated packages (subprocess nodes only)
     image          TEXT,                           -- Docker image (hardened nodes: deps baked in)
+    gpu            INTEGER NOT NULL DEFAULT 0,     -- 1 = needs a GPU passed into the container
     ram_mb         INTEGER NOT NULL DEFAULT 512,
     max_runtime    INTEGER NOT NULL DEFAULT 60,
     status         TEXT    NOT NULL DEFAULT 'pending',  -- pending/queued/running/done/failed
@@ -172,6 +173,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE web_jobs ADD COLUMN image TEXT")
         if jcols and "target_fp" not in jcols:
             conn.execute("ALTER TABLE web_jobs ADD COLUMN target_fp TEXT")
+        if jcols and "gpu" not in jcols:
+            conn.execute("ALTER TABLE web_jobs ADD COLUMN gpu INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     finally:
         conn.close()
@@ -758,7 +761,7 @@ def pending_web_jobs_for_org(org_id: int):
     try:
         rows = conn.execute(
             "SELECT id, org_id, user_id, interpreter, script, pip, image, ram_mb, max_runtime, "
-            "target_fp FROM web_jobs WHERE org_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 20",
+            "target_fp, gpu FROM web_jobs WHERE org_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 20",
             (org_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -835,14 +838,15 @@ def revoke_api_token(token: str, user_id: int) -> None:
 
 # -- web jobs (submitted from the browser; the gateway runs them) -------------
 def create_web_job(org_id, user_id, interpreter, script, pip, ram_mb, max_runtime,
-                   image=None, target_fp=None):
+                   image=None, target_fp=None, gpu=False):
     conn = connect()
     try:
         cur = conn.execute(
             "INSERT INTO web_jobs (org_id, user_id, interpreter, script, pip, image, ram_mb, "
-            "max_runtime, target_fp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_runtime, target_fp, gpu, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (org_id, user_id, interpreter, script, pip or None, (image or "").strip() or None,
-             int(ram_mb), int(max_runtime), (target_fp or "").strip() or None, now_iso()),
+             int(ram_mb), int(max_runtime), (target_fp or "").strip() or None,
+             1 if gpu else 0, now_iso()),
         )
         conn.commit()
         return cur.lastrowid

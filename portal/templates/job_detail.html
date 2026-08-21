@@ -17,6 +17,7 @@
     <div class="kv"><span class="k">Submitted by</span><span>{{ job["user_email"] }}</span></div>
     <div class="kv"><span class="k">Interpreter</span><span>{{ job["interpreter"] }}</span></div>
     {% if job["image"] %}<div class="kv"><span class="k">Image</span><span class="mono">{{ job["image"] }}</span></div>{% endif %}
+    {% if job["gpu"] %}<div class="kv"><span class="k">GPU</span><span style="color:var(--ok)">requested — graphics card passed into the container</span></div>{% endif %}
     {% if job["pip"] %}<div class="kv"><span class="k">Packages</span><span>{{ job["pip"] }}</span></div>{% endif %}
     <div class="kv"><span class="k">Node</span><span>{{ job["node_id"] or "—" }}</span></div>
     <div class="kv"><span class="k">Result</span><span>{{ job["result_status"] or "—" }}{% if job["exit_code"] is not none %} · exit {{ job["exit_code"] }}{% endif %}</span></div>
@@ -91,6 +92,9 @@
         {% endif %}{% endfor %}
       </select>
 
+      <label class="gpubox"><input type="checkbox" name="gpu" value="1" {% if job["gpu"] %}checked{% endif %}>
+        <span>Use the machine's GPU <span class="muted" style="font-size:11px;">— passes the graphics card into the container</span></span></label>
+
       <label class="lb">pip packages — <span style="color:#d29922">trusted (subprocess) nodes only</span></label>
       <input class="fld" name="pip" type="text" value="{{ job['pip'] or '' }}"
              placeholder="e.g. numpy, pandas, requests">
@@ -132,6 +136,9 @@
   code { background:#0d1117; padding:1px 5px; border-radius:4px; font-size:12px;
     font-family:ui-monospace,Consolas,monospace; }
   .lb { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  .gpubox { display:flex; align-items:center; gap:9px; margin:12px 0 2px; cursor:pointer;
+    font-size:13px; color:var(--text); }
+  .gpubox input { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; }
   .fld { width:100%; padding:9px 11px; font:inherit; color:var(--text); background:var(--panel2);
     border:1px solid var(--line); border-radius:8px; }
   .fld:focus { outline:none; border-color:var(--accent); }
